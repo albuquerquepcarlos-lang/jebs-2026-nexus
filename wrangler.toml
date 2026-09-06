@@ -1,0 +1,13 @@
+name = "jebs-2026-nexus"
+main = "worker.js"
+compatibility_date = "2026-09-06"
+
+[assets]
+directory = "."
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "jebs-2026-nexus22"
+database_id = "2d247404-6c67-42ff-bb79-93671b58e496"
+migrations_dir = "migrations"
