@@ -343,15 +343,14 @@ const INITIAL_TRANSPORTS=[{"id":"9.9 e 10.9 CH|2|1|09/09","sheet":"9.9 e 10.9 CH
 const $=id=>document.getElementById(id);
 const state={transports:INITIAL_TRANSPORTS.slice(),view:"home",category:"embarque",date:null,filter:"all",current:null,reportFilter:null,programBlock:null,convModal:null,history:(()=>{try{return JSON.parse(localStorage.getItem("jebsNexusHistory")||"{}")}catch(e){return {}}})(),convStatuses:(()=>{try{return JSON.parse(localStorage.getItem("jebsNexusConvStatuses")||"{}")}catch(e){return {}}})()};
 function stableKey(t){
- // A identidade precisa ser estável entre importações, mas não pode
- // juntar dois transportes legítimos que tenham número/rota parecidos.
- // A aba + linha de origem são determinísticas para a mesma planilha.
- const sheet=String(t?.sheet||"").trim().toUpperCase();
- const row=String(t?.row??"");
- const category=String(t?.category||"embarque").trim().toLowerCase();
- const number=String(t?.number??"").trim();
- const date=String(t?.date||"").trim();
- return `${category}|${sheet}|${row}|${number}|${date}`;
+  // Identidade física da linha/bloco da planilha.
+  // Não usar rota, municípios ou horários: existem transportes diferentes
+  // com o mesmo número e até rotas semelhantes.
+  const sheet=String(t?.sheet||"IMPORTADO").trim();
+  const row=String(t?.row??"").trim();
+  const number=String(t?.number??"").trim();
+  const date=String(t?.date??"").trim();
+  return `${t?.category||"embarque"}|${sheet}|${row}|${number}|${date}`;
 }
 function migrateHistory(){const next={...state.history}; for(const t of state.transports){const k=stableKey(t); if(!next[k]&&next[t.id]) next[k]=next[t.id]; if(next[k]) state.history[t.id]=next[k];} }
 migrateHistory();;
@@ -572,7 +571,7 @@ function dateSort(a,b){
  if(pa)return -1;if(pb)return 1;return String(a).localeCompare(String(b));
 }
 
-function card(t){const s=status(t),h=hist(t),rawP=Number(t.passengers);const p=Number.isFinite(rawP)&&rawP>=0?rawP:(t.stops||[]).reduce((a,x)=>a+(Number.isFinite(Number(x.qty))&&Number(x.qty)>=0?Number(x.qty):0),0);return `<article class="transportCard ${s}" data-id="${encodeURIComponent(t.id)}"><div class="tcTop"><div><div class="tcNum">TRANSPORTE ${esc(t.number)}</div><div class="tcRoute">${esc(route(t))}</div></div><span class="status ${s==="done"?"sDone":s==="progress"?"sProgress":"sPending"}">${statusText(t)}</span></div><div class="tcMeta"><div class="metaBox"><small>Representante</small><b>${esc(t.representative||"Não informado")}</b></div><div class="metaBox"><small>Passageiros</small><b>${p}</b></div><div class="metaBox metaStatus"><small>Status</small><b>${statusText(t)}</b></div><div class="metaBox"><small>Check-ins</small><b>${(h.stops||[]).length} / ${t.stops?.filter(x=>x.kind!=="chegada").length||0}</b></div></div></article>`}
+function card(t){const s=status(t),h=hist(t),p=t.passengers||t.stops?.reduce((a,x)=>a+(x.qty||0),0)||0;return `<article class="transportCard ${s}" data-id="${encodeURIComponent(t.id)}"><div class="tcTop"><div><div class="tcNum">TRANSPORTE ${esc(t.number)}</div><div class="tcRoute">${esc(route(t))}</div></div><span class="status ${s==="done"?"sDone":s==="progress"?"sProgress":"sPending"}">${statusText(t)}</span></div><div class="tcMeta"><div class="metaBox"><small>Representante</small><b>${esc(t.representative||"Não informado")}</b></div><div class="metaBox"><small>Passageiros</small><b>${p}</b></div><div class="metaBox metaStatus"><small>Status</small><b>${statusText(t)}</b></div><div class="metaBox"><small>Check-ins</small><b>${(h.stops||[]).length} / ${t.stops?.filter(x=>x.kind!=="chegada").length||0}</b></div></div></article>`}
 function enterCategory(cat){state.category=cat;state.view="dates";state.date=null;state.filter="all";render()}
 function enterDate(d){state.date=decodeURIComponent(d);state.view="transports";state.filter="all";render()}
 function goCategories(){state.view="categories";render()}function goDates(){state.view="dates";render()}
@@ -587,28 +586,26 @@ function toggleStop(i){
 function toggleStep(i){
  const t=state.current;if(!t)return;
  const h=hist(t);h.steps=h.steps||[false,false,false];
- h.steps[i]=!Boolean(h.steps[i]);
- // As etapas são sequenciais: desfazer uma etapa também desfaz as seguintes.
- if(i===0 && !h.steps[0]){ h.steps[1]=false; h.steps[2]=false; }
- if(i===1 && !h.steps[1]){ h.steps[2]=false; }
- h.done=Boolean(h.steps[0]&&h.steps[1]&&h.steps[2]);
- h.updatedAt=new Date().toISOString();
+ h.steps[i]=!h.steps[i];
+ if(i===0 && !h.steps[0]) h.steps[1]=false;
+ if(i===1 && !h.steps[1]) h.steps[2]=false;
+ h.done=h.steps[0]&&h.steps[1]&&h.steps[2];
  persist();render();openTransport(t.id);
 }
 function completeTransport(){
  const t=state.current;if(!t)return;
  const h=hist(t);
- // Concluir é reversível: se já estiver concluído, desfaz a conclusão.
- if(h.done || (h.steps||[]).every(Boolean)){
-   h.steps=[false,false,false];
+ // Concluir/reabrir é reversível. Ao reabrir, preservamos os check-ins
+ // das paradas e as duas primeiras etapas; apenas retiramos a chegada/conclusão.
+ if(h.done){
    h.done=false;
+   h.steps=[Boolean(h.steps?.[0]),Boolean(h.steps?.[1]),false];
  }else{
    h.steps=[true,true,true];
    h.done=true;
    h.stops=(t.stops||[]).map((x,i)=>x.kind!=="chegada"?i:null).filter(x=>x!==null);
  }
- h.updatedAt=new Date().toISOString();
- persist();closeModal();render();
+ persist();render();openTransport(t.id);
 }
 function closeModal(){
  if($("search")){ $("search").value=""; updateSearchClear(); }
@@ -631,7 +628,7 @@ function openTransport(id){
    </div>
    <div class="detailGrid">
      <div class="detail"><small>Representante</small><b>${esc(t.representative||"Não informado")}</b></div>
-     <div class="detail"><small>Passageiros</small><b>${Number.isFinite(Number(t.passengers))&&Number(t.passengers)>=0?Number(t.passengers):0}</b></div>
+     <div class="detail"><small>Passageiros</small><b>${t.passengers||0}</b></div>
      <div class="detail"><small>Quem cuida</small><b>${esc(t.contact||"Não informado")}</b></div>
      <div class="detail"><small>Distância</small><b>${esc(t.distance||"Não informada")}</b></div>
    </div>
@@ -646,7 +643,7 @@ function openTransport(id){
    ${stepNames.map((s,i)=>`<button type="button" class="step ${h.steps?.[i]?"done":""}" data-step="${i}">
       <span class="stepIcon">${h.steps?.[i]?"✓":""}</span><b>${s}</b>
    </button>`).join("")}
-   <button type="button" class="primary" data-action="complete">✓ Concluir transporte</button>
+   <button type="button" class="primary" data-action="complete">${h.done?"↩ Reabrir transporte":"✓ Concluir transporte"}</button>
    <button type="button" class="homeActionV18" data-action="home">⌂ &nbsp; INÍCIO</button><button type="button" class="bottomClose" data-action="close">Fechar e voltar</button>
  </div>`;
  $("modal").classList.add("open"); document.body.classList.add("modalLocked");
@@ -746,7 +743,7 @@ function parseTransportRows(sheets){
  for(const sh of sheets){
    const ret=/\bRET\b/i.test(sh.name), sheetDate=(sh.name.match(/(\d{1,2})[.,]9/)||[])[1];
    let current=null;
-   const finish=()=>{if(current){current.stops=current.stops.map(x=>({...x,qty:Number.isFinite(Number(x.qty))&&Number(x.qty)>=0?Number(x.qty):0}));current.passengers=current.stops.reduce((a,x)=>a+(Number.isFinite(Number(x.qty))?Number(x.qty):0),0);out.push(current);current=null}};
+   const finish=()=>{if(current){current.passengers=current.stops.reduce((a,x)=>a+(Number(x.qty)||0),0);out.push(current);current=null}};
    for(let i=0;i<sh.rows.length;i++){
      const row=(sh.rows[i]||[]).map(v=>String(v??"").trim()), joined=row.join(" ");
      const tm=joined.match(/TRANSPORTE\s*([0-9]+)?\s*[-–—]?\s*DATA\s*:?\s*(\d{1,2})?\s*[\/.]?\s*(\d{1,2})?/i);
@@ -774,7 +771,7 @@ function parseTransportRows(sheets){
      // Stop row: municipality, school/address/contact/qty/destination.
      const hasStop=row.slice(0,7).some(v=>String(v).trim()!=="");
      const qty=Number(row[5]);
-     if(hasStop && (row[0]||row[6]||row[2]) && Number.isFinite(qty) && qty>=0){
+     if(hasStop && (row[0]||row[6]||row[2]) && !Number.isNaN(qty)){
        const municipio=String(row[0]||row[6]||"").trim();
        current.stops.push({kind:"embarque",municipio:municipio||String(row[6]||"").trim(),time:row[1]||"",school:row[2]||"",address:row[3]||"",contact:row[4]||"",qty:qty||0,destination:row[6]||""});
      }
