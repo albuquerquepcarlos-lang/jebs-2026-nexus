@@ -356,6 +356,7 @@ function status(t){const h=hist(t);if(h.done)return"done";if((h.steps||[]).some(
 function statusText(t){return {pending:"PENDENTE",progress:"EM ANDAMENTO",done:"CONCLUÍDO"}[status(t)]}
 let syncTimer=null;
 let syncBusy=false;
+let replaceTransportsNextSync=false;
 function persist(){
  localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
  queueServerSync();
@@ -378,12 +379,13 @@ async function serverSync(){
  syncBusy=true;
  try{
    normalizeLocalState();
-   const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({transports:state.transports,history:state.history,convStatuses:state.convStatuses||{}})});
+   const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({transports:state.transports,history:state.history,convStatuses:state.convStatuses||{},replaceTransports:replaceTransportsNextSync})});
    if(!res.ok)throw new Error('Servidor de dados indisponível');
    const data=await res.json();
    if(data?.transports?.length) state.transports=data.transports;
    if(data?.history) state.history=data.history;
    if(data?.convStatuses) state.convStatuses=data.convStatuses;
+   if(replaceTransportsNextSync) replaceTransportsNextSync=false;
    localStorage.setItem('jebsNexusHistory',JSON.stringify(state.history));
    localStorage.setItem('jebsNexusConvStatuses',JSON.stringify(state.convStatuses||{}));
  }catch(e){ console.warn('Nexus DB sync:',e); }
@@ -781,15 +783,21 @@ async function importWorkbook(file){
    }
    if(!imported.length)throw new Error("Não encontrei nenhum bloco 'TRANSPORTE' nessa planilha.");
    normalizeLocalState();
+
+   // Importação é uma substituição da lista de transportes, não uma soma.
+   // A identidade estável impede que a mesma planilha crie novos registros.
    const oldByKey=new Map(state.transports.map(t=>[stableKey(t),t]));
+   const importedByKey=new Map();
    imported.forEach(t=>{
      const key=stableKey(t);
      const prev=oldByKey.get(key);
      t.id=key;
      if(prev && state.history[prev.id]) state.history[key]=state.history[prev.id];
-     oldByKey.set(key,t);
+     if(prev && state.history[stableKey(prev)]) state.history[key]=state.history[stableKey(prev)];
+     importedByKey.set(key,t);
    });
-   state.transports=[...oldByKey.values()];
+   state.transports=[...importedByKey.values()];
+   replaceTransportsNextSync=true;
    persist();
    state.view="categories";state.date=null;state.filter="all";
    render();
