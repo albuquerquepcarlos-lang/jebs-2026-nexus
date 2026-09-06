@@ -94,6 +94,19 @@ main{max-width:1120px;padding:18px 16px 70px}
 }
 @media(max-width:430px){.importBtn{font-size:10px;padding:11px 9px}.brand b{font-size:13px;max-width:155px}.hero{min-height:490px}.heroText{max-width:60%}.heroText h1{font-size:48px}.mascot{width:61%;height:345px}.homeTilesPremium .tile{min-height:158px!important}.homeTilesPremium .tile strong{font-size:19px!important}.convGrid{grid-template-columns:1fr}.modalityGrid{grid-template-columns:1fr 1fr}}
 
+/* RELATÓRIO XLS — ação principal, touch-friendly */
+.downloadXls{
+ display:flex!important;align-items:center;justify-content:center;gap:10px;
+ width:100%;min-height:68px;padding:16px 20px!important;
+ border:0!important;border-radius:20px!important;
+ background:linear-gradient(135deg,#1687eb,#2e62d4)!important;
+ color:#fff!important;font-size:17px!important;font-weight:1000!important;
+ box-shadow:0 12px 26px rgba(46,98,212,.22)!important;
+ cursor:pointer;touch-action:manipulation;
+}
+.downloadXls:active{transform:translateY(1px)}
+.downloadXls::first-letter{font-size:20px}
+
 /* V18 — premium V10-inspired visual + large touch-first navigation */
 body{background:#eef2f8}
 .header{background:linear-gradient(100deg,#12245a 0%,#233b84 58%,#4d2b88 100%)}
@@ -575,7 +588,16 @@ function dateSort(a,b){
  if(pa)return -1;if(pb)return 1;return String(a).localeCompare(String(b));
 }
 
-function card(t){const s=status(t),h=hist(t),p=t.passengers||t.stops?.reduce((a,x)=>a+(x.qty||0),0)||0;return `<article class="transportCard ${s}" data-id="${encodeURIComponent(t.id)}"><div class="tcTop"><div><div class="tcNum">TRANSPORTE ${esc(t.number)}</div><div class="tcRoute">${esc(route(t))}</div></div><span class="status ${s==="done"?"sDone":s==="progress"?"sProgress":"sPending"}">${statusText(t)}</span></div><div class="tcMeta"><div class="metaBox"><small>Representante</small><b>${esc(t.representative||"Não informado")}</b></div><div class="metaBox"><small>Passageiros</small><b>${p}</b></div><div class="metaBox metaStatus"><small>Status</small><b>${statusText(t)}</b></div><div class="metaBox"><small>Check-ins</small><b>${(h.stops||[]).length} / ${t.stops?.filter(x=>x.kind!=="chegada").length||0}</b></div></div></article>`}
+function safeNum(v,fallback=0){
+ const n=typeof v==="number"?v:Number(String(v??"").replace(",","."));
+ return Number.isFinite(n)?n:fallback;
+}
+function passengerCount(t){
+ const direct=safeNum(t?.passengers,NaN);
+ if(Number.isFinite(direct)&&direct>=0) return direct;
+ return (t?.stops||[]).filter(x=>x.kind!=="chegada").reduce((a,x)=>a+Math.max(0,safeNum(x.qty,0)),0);
+}
+function card(t){const s=status(t),h=hist(t),p=passengerCount(t);return `<article class="transportCard ${s}" data-id="${encodeURIComponent(t.id)}"><div class="tcTop"><div><div class="tcNum">TRANSPORTE ${esc(t.number)}</div><div class="tcRoute">${esc(route(t))}</div></div><span class="status ${s==="done"?"sDone":s==="progress"?"sProgress":"sPending"}">${statusText(t)}</span></div><div class="tcMeta"><div class="metaBox"><small>Representante</small><b>${esc(t.representative||"Não informado")}</b></div><div class="metaBox"><small>Passageiros</small><b>${p}</b></div><div class="metaBox metaStatus"><small>Status</small><b>${statusText(t)}</b></div><div class="metaBox"><small>Check-ins</small><b>${(h.stops||[]).length} / ${t.stops?.filter(x=>x.kind!=="chegada").length||0}</b></div></div></article>`}
 function enterCategory(cat){state.category=cat;state.view="dates";state.date=null;state.filter="all";render()}
 function enterDate(d){state.date=decodeURIComponent(d);state.view="transports";state.filter="all";render()}
 function goCategories(){state.view="categories";render()}function goDates(){state.view="dates";render()}
@@ -599,17 +621,20 @@ function toggleStep(i){
 function completeTransport(){
  const t=state.current;if(!t)return;
  const h=hist(t);
- // Concluir/reabrir é reversível. Ao reabrir, preservamos os check-ins
- // das paradas e as duas primeiras etapas; apenas retiramos a chegada/conclusão.
+ // Reabrir é uma ação única: limpa todas as etapas e check-ins deste transporte.
+ // Não é necessário clicar em cada parada individualmente.
  if(h.done){
    h.done=false;
-   h.steps=[Boolean(h.steps?.[0]),Boolean(h.steps?.[1]),false];
+   h.steps=[false,false,false];
+   h.stops=[];
  }else{
    h.steps=[true,true,true];
    h.done=true;
    h.stops=(t.stops||[]).map((x,i)=>x.kind!=="chegada"?i:null).filter(x=>x!==null);
  }
- persist();render();openTransport(t.id);
+ persist();
+ render();
+ openTransport(t.id);
 }
 function closeModal(){
  if($("search")){ $("search").value=""; updateSearchClear(); }
@@ -632,7 +657,7 @@ function openTransport(id){
    </div>
    <div class="detailGrid">
      <div class="detail"><small>Representante</small><b>${esc(t.representative||"Não informado")}</b></div>
-     <div class="detail"><small>Passageiros</small><b>${t.passengers||0}</b></div>
+     <div class="detail"><small>Passageiros</small><b>${passengerCount(t)}</b></div>
      <div class="detail"><small>Quem cuida</small><b>${esc(t.contact||"Não informado")}</b></div>
      <div class="detail"><small>Distância</small><b>${esc(t.distance||"Não informada")}</b></div>
    </div>
@@ -854,7 +879,7 @@ function downloadTransportReport(){
     return [
       statusLabel(t), t.category==="retorno"?"RETORNO":"EMBARQUE", t.number, t.date,
       t.representative||"", t.contact||"", t.distance||"",
-      Number.isFinite(Number(t.passengers))?Number(t.passengers):stops.reduce((a,x)=>a+(Number(x.qty)||0),0),
+      passengerCount(t),
       routeText, arrival?normalizeTime(arrival.time):"", arrival?.destination||"",
       h.steps?.[0]?"SIM":"NÃO", h.steps?.[1]?"SIM":"NÃO", h.steps?.[2]?"SIM":"NÃO",
       h.done?"SIM":"NÃO", checkins, stops.length,
@@ -873,10 +898,21 @@ function downloadTransportReport(){
   const table=`<table border="1"><tr>${headers.map(h=>`<th>${escX(h)}</th>`).join("")}</tr>${rows.map(r=>`<tr>${r.map(v=>`<td>${escX(v).replace(/\n/g,"<br>")}</td>`).join("")}</tr>`).join("")}</table>`;
   const summaryTable=`<table border="1">${summary.map((r,i)=>`<tr>${r.map(v=>`<${i===0?"th":"td"}>${escX(v)}</${i===0?"th":"td"}>`).join("")}</tr>`).join("")}</table>`;
   const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:Arial;font-size:10pt}table{border-collapse:collapse;margin-bottom:18px}th{font-weight:bold;background:#eee}th,td{padding:5px;border:1px solid #999;vertical-align:top}td{mso-number-format:"\@"}</style></head><body><h2>JEBs 2026 — Relatório de Transportes</h2><p>Gerado em ${escX(new Date().toLocaleString("pt-BR"))}</p>${summaryTable}${table}</body></html>`;
-  const blob=new Blob(["\ufeff"+html],{type:"application/vnd.ms-excel;charset=utf-8"});
-  const url=URL.createObjectURL(blob), a=document.createElement("a");
-  a.href=url; a.download=`JEBs_2026_Relatorio_Transportes_${new Date().toISOString().slice(0,10)}.xls`;
-  document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+  const blob=new Blob(["\ufeff"+html],{type:"application/vnd.ms-excel"});
+  const filename=`JEBs_2026_Relatorio_Transportes_${new Date().toISOString().slice(0,10)}.xls`;
+  if(window.navigator && typeof window.navigator.msSaveOrOpenBlob==="function"){
+    window.navigator.msSaveOrOpenBlob(blob,filename);
+    return;
+  }
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.style.display="none";
+  a.href=url;
+  a.download=filename;
+  a.setAttribute("download",filename);
+  document.body.appendChild(a);
+  try{a.click();}catch(e){window.open(url,"_blank");}
+  setTimeout(()=>{a.remove();URL.revokeObjectURL(url);},3000);
 }
 function updateSearchClear(){const b=$("clearSearch"),s=$("search");if(b&&s)b.classList.toggle("show",!!s.value)}
 $("search").addEventListener("input",()=>{updateSearchClear();render()});
