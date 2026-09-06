@@ -360,6 +360,7 @@ function status(t){const h=hist(t);if(h.done)return"done";if((h.steps||[]).some(
 function statusText(t){return {pending:"PENDENTE",progress:"EM ANDAMENTO",done:"CONCLUÍDO"}[status(t)]}
 let syncTimer=null;
 let syncBusy=false;
+let replaceTransportsPending=false;
 function persist(){
  localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
  queueServerSync();
@@ -380,9 +381,10 @@ function normalizeLocalState(){
 async function serverSync(){
  if(syncBusy)return;
  syncBusy=true;
+ const replaceNow=replaceTransportsPending;
  try{
    normalizeLocalState();
-   const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({transports:state.transports,history:state.history,convStatuses:state.convStatuses||{}})});
+   const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({transports:state.transports,history:state.history,convStatuses:state.convStatuses||{},replaceTransports:replaceNow})});
    if(!res.ok)throw new Error('Servidor de dados indisponível');
    const data=await res.json();
    if(data?.transports?.length) state.transports=data.transports;
@@ -390,6 +392,7 @@ async function serverSync(){
    if(data?.convStatuses) state.convStatuses=data.convStatuses;
    localStorage.setItem('jebsNexusHistory',JSON.stringify(state.history));
    localStorage.setItem('jebsNexusConvStatuses',JSON.stringify(state.convStatuses||{}));
+   if(replaceNow) replaceTransportsPending=false;
  }catch(e){ console.warn('Nexus DB sync:',e); }
  finally{ syncBusy=false; }
 }
@@ -793,16 +796,21 @@ async function importWorkbook(file){
    }
    if(!imported.length)throw new Error("Não encontrei nenhum bloco 'TRANSPORTE' nessa planilha.");
    normalizeLocalState();
-   const oldByKey=new Map(state.transports.map(t=>[stableKey(t),t]));
+   const oldHistory={...state.history};
+   const importedByKey=new Map();
    imported.forEach(t=>{
      const key=stableKey(t);
-     const prev=oldByKey.get(key);
+     const prevId=t.id;
      t.id=key;
-     if(prev && state.history[prev.id]) state.history[key]=state.history[prev.id];
-     oldByKey.set(key,t);
+     // Preserve history from either the freshly imported key or the previous ID.
+     if(oldHistory[key]) state.history[key]=oldHistory[key];
+     else if(oldHistory[prevId]) state.history[key]=oldHistory[prevId];
+     importedByKey.set(key,t);
    });
-   state.transports=[...oldByKey.values()];
-   persist();
+   // A full planilha import replaces the transport list. This prevents old
+   // duplicated transports from surviving in local state.
+   state.transports=[...importedByKey.values()];
+   persist(true);
    state.view="categories";state.date=null;state.filter="all";
    render();
    alert(`Planilha importada com sucesso: ${imported.length} transporte(s). O histórico de check-ins foi preservado.`);

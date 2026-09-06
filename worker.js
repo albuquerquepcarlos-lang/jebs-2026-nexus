@@ -92,20 +92,24 @@ async function writeState(env, payload) {
     .filter(t => t?.id)
     .map(t => ({ id: String(t.id), data: JSON.stringify(t) }));
 
-  // Quando a chamada vem de uma nova importação, a lista recebida é a fonte
-  // completa da verdade. Removemos registros antigos que não fazem parte dela.
+  // Uma importação completa substitui a lista de transportes.
+  // Primeiro descobrimos quais IDs antigos não fazem parte da nova lista,
+  // depois removemos esses IDs em lotes. Isso evita o erro de fazer vários
+  // DELETE ... NOT IN em sequência, que poderia apagar registros válidos.
   if (replaceTransports) {
-    const ids = transportEntries.map(x => x.id);
-    if (ids.length) {
-      for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
-        const chunk = ids.slice(i, i + CHUNK_SIZE);
-        const placeholders = chunk.map(() => "?").join(",");
-        await env.DB.prepare(
-          `DELETE FROM transports WHERE id NOT IN (${placeholders})`
-        ).bind(...chunk).run();
-      }
-    } else {
-      await env.DB.prepare("DELETE FROM transports").run();
+    const incomingIds = new Set(transportEntries.map(x => x.id));
+    const existing = await env.DB.prepare("SELECT id FROM transports").all();
+    const obsolete = (existing.results || [])
+      .map(row => String(row.id))
+      .filter(id => !incomingIds.has(id));
+
+    for (let i = 0; i < obsolete.length; i += CHUNK_SIZE) {
+      const chunk = obsolete.slice(i, i + CHUNK_SIZE);
+      if (!chunk.length) continue;
+      const placeholders = chunk.map(() => "?").join(",");
+      await env.DB.prepare(
+        `DELETE FROM transports WHERE id IN (${placeholders})`
+      ).bind(...chunk).run();
     }
   }
 
