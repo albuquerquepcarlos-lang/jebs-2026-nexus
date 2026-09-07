@@ -29,7 +29,9 @@ async function writeState(env,payload){
   const rows=await env.DB.prepare(`SELECT id,data FROM transport_history WHERE id IN (${ph})`).bind(...historyIds).all();
   for(const row of rows.results||[]){const parsed=safeParse(row.data);if(parsed)existingHistory[row.id]=parsed;}
  }
+ const forceIds=new Set(Array.isArray(payload?.forceHistoryIds)?payload.forceHistoryIds.map(String):[]);
  const history=mergeHistory(existingHistory,incomingHistory);
+ for(const id of forceIds){ if(Object.prototype.hasOwnProperty.call(incomingHistory,id)) history[id]=incomingHistory[id]; }
  const batch=[];
  if(payload?.replaceTransports===true) batch.push(env.DB.prepare('DELETE FROM transports'));
  for(const t of transports){if(!t?.id)continue;batch.push(env.DB.prepare("INSERT INTO transports (id,data,updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at").bind(String(t.id),JSON.stringify(t)))}

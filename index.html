@@ -351,6 +351,7 @@ async function serverSync(options={}){
   try{
     const payload={transports:state.transports,history:state.history,convStatuses:state.convStatuses||{}};
     if(options.replaceTransports) payload.replaceTransports=true;
+    if(Array.isArray(options.forceHistoryIds)) payload.forceHistoryIds=options.forceHistoryIds;
     const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
     if(!res.ok) throw new Error('Servidor de dados indisponível');
     await res.json();
@@ -388,6 +389,11 @@ function persist(){
  localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
  localStorage.setItem("jebsNexusConvStatuses",JSON.stringify(state.convStatuses||{}));
  queueServerSync();
+}
+function formatExcelTime(v){
+ const s=String(v??"").trim(); if(!s)return "";
+ if(/^\d+(?:\.\d+)?$/.test(s)){ const n=Number(s); if(n>=0&&n<1){ const total=Math.round(n*86400)%86400; const hh=String(Math.floor(total/3600)).padStart(2,"0"); const mm=String(Math.floor((total%3600)/60)).padStart(2,"0"); const ss=String(total%60).padStart(2,"0"); return `${hh}:${mm}:${ss}`; } }
+ return s;
 }
 function route(t){const first=t.stops?.find(s=>s.kind!=="chegada")?.municipio||"Origem";const a=t.stops?.find(s=>s.kind==="chegada");return first+" → "+(a?.destination||t.stops?.at(-1)?.destination||"Destino")}
 function renderStats(){const ts=state.transports;[["total",ts.length],["pending",ts.filter(t=>status(t)==="pending").length],["progress",ts.filter(t=>status(t)==="progress").length],["done",ts.filter(t=>status(t)==="done").length]].forEach(([id,value])=>{const el=$(id);if(el)el.textContent=value})}
@@ -590,7 +596,10 @@ function reopenTransport(){
  const t=state.current;if(!t)return;
  const h=hist(t);
  h.steps=[false,false,false];h.done=false;h.stops=[];
- persist();closeModal();render();
+ localRevision++;
+ localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
+ closeModal();render();
+ serverSync({forceHistoryIds:[t.id]});
 }
 function closeModal(){
  if($("search")){ $("search").value=""; updateSearchClear(); }
@@ -623,7 +632,7 @@ function openTransport(id){
       <span class="stopMain"><b>${esc(x.municipio||"Parada")}</b><span>${esc(x.address||x.destination||"")}</span></span>
       <span class="stopQty">${x.qty||0} pax</span>
    </button>`).join("")}
-   ${arrival?`<div class="stop"><div class="stopCheck">→</div><div class="stopMain"><b>CHEGADA</b><span>${esc(arrival.destination||"Destino")}</span></div><div class="stopQty">${esc(arrival.time||"")}</div></div>`:""}
+   ${arrival?`<div class="stop"><div class="stopCheck">→</div><div class="stopMain"><b>CHEGADA</b><span>${esc(arrival.destination||"Destino")}</span></div><div class="stopQty">${esc(formatExcelTime(arrival.time||""))}</div></div>`:""}
    <div class="sectionLabel">Acompanhamento</div>
    ${stepNames.map((s,i)=>`<button type="button" class="step ${h.steps?.[i]?"done":""}" data-step="${i}">
       <span class="stepIcon">${h.steps?.[i]?"✓":""}</span><b>${s}</b>
@@ -794,6 +803,7 @@ async function importWorkbook(file){
      imported=parseTransportRows(sheets);
    }
    if(!imported.length)throw new Error("Não encontrei nenhum bloco 'TRANSPORTE' nessa planilha.");
+   imported=imported.map(t=>({...t,stops:Array.isArray(t.stops)?t.stops.map(x=>x?.kind==="chegada"?({...x,time:formatExcelTime(x.time)}):x):t.stops}));
    const old=state.transports.slice();
    const oldByKey=new Map(old.map(t=>[stableKey(t),t]));
    const oldByIdentity=new Map(old.map(t=>[`${t.category||"embarque"}|${t.number??""}|${t.date||""}`,t]));
