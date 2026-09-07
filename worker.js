@@ -1,11 +1,8 @@
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status,
   headers: {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
-    "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "Content-Type"
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store'
   }
 });
 
@@ -38,9 +35,9 @@ function mergeHistory(base = {}, incoming = {}) {
 
 async function readState(env) {
   const [trs, hist, conv] = await Promise.all([
-    env.DB.prepare("SELECT id, data FROM transports ORDER BY id").all(),
-    env.DB.prepare("SELECT id, data FROM transport_history").all(),
-    env.DB.prepare("SELECT person_key, status FROM conv_status").all()
+    env.DB.prepare('SELECT id, data FROM transports ORDER BY id').all(),
+    env.DB.prepare('SELECT id, data FROM transport_history').all(),
+    env.DB.prepare('SELECT person_key, status FROM conv_status').all()
   ]);
 
   const transports = (trs.results || []).map(r => JSON.parse(r.data));
@@ -59,33 +56,57 @@ async function readState(env) {
   };
 }
 
-/*
- * D1 has a limit on how many statements can be sent in a single batch.
- * The previous Worker put one INSERT/UPSERT per transport into ONE batch.
- * With 120+ transports that batch became too large and the whole POST failed.
- *
- * Keep each batch comfortably below the D1 batch statement limit.
- */
-async function runBatches(env, statements, chunkSize = 50) {
-  for (let i = 0; i < statements.length; i += chunkSize) {
-    const chunk = statements.slice(i, i + chunkSize);
-    if (chunk.length) await env.DB.batch(chunk);
+// D1 has a limit on how many statements can be sent in one batch.
+// Keep a safety margin so a normal planilha with 120+ transports works.
+async function executeStatements(env, statements, labels = []) {
+  if (!statements.length) {
+    return { success: true, attempted: 0, written: 0, errors: [] };
   }
+
+  const CHUNK_SIZE = 80;
+  let written = 0;
+  const errors = [];
+
+  for (let start = 0; start < statements.length; start += CHUNK_SIZE) {
+    const chunk = statements.slice(start, start + CHUNK_SIZE);
+    try {
+      await env.DB.batch(chunk);
+      written += chunk.length;
+    } catch (batchError) {
+      errors.push({
+        chunkStart: start,
+        chunkSize: chunk.length,
+        error: batchError?.message || String(batchError)
+      });
+      console.error('Erro ao gravar lote D1:', batchError);
+      return {
+        success: false,
+        attempted: statements.length,
+        written,
+        errors,
+        batchError: batchError?.message || String(batchError)
+      };
+    }
+  }
+
+  return { success: true, attempted: statements.length, written, errors };
 }
 
 async function writeState(env, payload) {
   const transports = Array.isArray(payload?.transports) ? payload.transports : [];
   const incomingHistory = payload?.history || {};
   const convStatuses = payload?.convStatuses || {};
+  const replaceTransports = payload?.replaceTransports === true;
 
-  // Never let an import erase check-ins already stored on another device.
+  // Preserve the check-in history already stored in D1.
   const historyIds = Object.keys(incomingHistory).filter(Boolean);
   const existingHistory = {};
 
   if (historyIds.length) {
-    for (let i = 0; i < historyIds.length; i += 50) {
-      const ids = historyIds.slice(i, i + 50);
-      const placeholders = ids.map(() => "?").join(",");
+    // Keep each SELECT comfortably below SQLite's variable limit.
+    for (let start = 0; start < historyIds.length; start += 80) {
+      const ids = historyIds.slice(start, start + 80);
+      const placeholders = ids.map(() => '?').join(',');
       const rows = await env.DB.prepare(
         `SELECT id, data FROM transport_history WHERE id IN (${placeholders})`
       ).bind(...ids).all();
@@ -99,12 +120,19 @@ async function writeState(env, payload) {
   }
 
   const history = mergeHistory(existingHistory, incomingHistory);
-  const statements = [];
 
+  // When importing a planilha, the spreadsheet is authoritative for the
+  // transport list. Delete the old transport rows first so old imports cannot
+  // remain and cause 122 -> 240 -> 300+ duplication.
+  if (replaceTransports) {
+    await env.DB.prepare('DELETE FROM transports').run();
+  }
+
+  const transportStatements = [];
+  const transportLabels = [];
   for (const t of transports) {
     if (!t?.id) continue;
-
-    statements.push(
+    transportStatements.push(
       env.DB.prepare(
         `INSERT INTO transports (id, data, updated_at)
          VALUES (?, ?, datetime('now'))
@@ -113,12 +141,19 @@ async function writeState(env, payload) {
            updated_at=excluded.updated_at`
       ).bind(String(t.id), JSON.stringify(t))
     );
+    transportLabels.push(String(t.id));
   }
 
+  const transportResult = await executeStatements(env, transportStatements, transportLabels);
+  if (!transportResult.success) {
+    throw new Error(`Falha ao gravar transportes: ${transportResult.batchError || 'erro no D1'}`);
+  }
+
+  const historyStatements = [];
+  const historyLabels = [];
   for (const [id, value] of Object.entries(history)) {
     if (!id) continue;
-
-    statements.push(
+    historyStatements.push(
       env.DB.prepare(
         `INSERT INTO transport_history (id, data, updated_at)
          VALUES (?, ?, datetime('now'))
@@ -127,12 +162,19 @@ async function writeState(env, payload) {
            updated_at=excluded.updated_at`
       ).bind(String(id), JSON.stringify(value))
     );
+    historyLabels.push(String(id));
   }
 
+  const historyResult = await executeStatements(env, historyStatements, historyLabels);
+  if (!historyResult.success) {
+    throw new Error(`Falha ao gravar histórico: ${historyResult.batchError || 'erro no D1'}`);
+  }
+
+  const convStatements = [];
+  const convLabels = [];
   for (const [personKey, status] of Object.entries(convStatuses)) {
     if (!personKey) continue;
-
-    statements.push(
+    convStatements.push(
       env.DB.prepare(
         `INSERT INTO conv_status (person_key, status, updated_at)
          VALUES (?, ?, datetime('now'))
@@ -141,9 +183,14 @@ async function writeState(env, payload) {
            updated_at=excluded.updated_at`
       ).bind(String(personKey), String(status))
     );
+    convLabels.push(String(personKey));
   }
 
-  await runBatches(env, statements, 50);
+  const convResult = await executeStatements(env, convStatements, convLabels);
+  if (!convResult.success) {
+    throw new Error(`Falha ao gravar status: ${convResult.batchError || 'erro no D1'}`);
+  }
+
   return readState(env);
 }
 
@@ -152,48 +199,27 @@ export default {
     const url = new URL(request.url);
 
     try {
-      if (request.method === "OPTIONS") {
-        return json({ ok: true });
-      }
-
-      if (url.pathname === "/api/health" && request.method === "GET") {
-        await env.DB.prepare("SELECT 1").first();
-        return json({
-          ok: true,
-          service: "jebs-2026-nexus",
-          database: "connected"
-        });
-      }
-
-      if (url.pathname === "/api/state" && request.method === "GET") {
+      if (url.pathname === '/api/state' && request.method === 'GET') {
         return json(await readState(env));
       }
 
-      if (url.pathname === "/api/state" && request.method === "POST") {
+      if (url.pathname === '/api/state' && request.method === 'POST') {
         const payload = await request.json();
-
-        if (!payload || typeof payload !== "object") {
-          return json({ ok: false, error: "Payload inválido." }, 400);
-        }
-
-        const state = await writeState(env, payload);
-        return json({ ok: true, ...state });
+        return json(await writeState(env, payload));
       }
 
-      // This Worker is currently being used as the API service. If no
-      // ASSETS binding exists, don't crash with "undefined.fetch".
-      if (env.ASSETS?.fetch) {
-        return env.ASSETS.fetch(request);
+      if (url.pathname === '/api/health') {
+        await env.DB.prepare('SELECT 1').first();
+        return json({
+          ok: true,
+          service: 'jebs-2026-nexus',
+          database: 'connected'
+        });
       }
 
-      return json({
-        ok: false,
-        error: "Rota não encontrada."
-      }, 404);
-
+      return env.ASSETS.fetch(request);
     } catch (error) {
-      console.error("NEXUS_WORKER_ERROR", error);
-
+      console.error(error);
       return json({
         ok: false,
         error: error?.message || String(error)
