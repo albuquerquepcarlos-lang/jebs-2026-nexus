@@ -480,85 +480,17 @@ function render(){
    return;
  }
  function csvCell(v){const s=String(v??"");return '"'+s.replace(/"/g,'""')+'"'}
-function buildReportRows(){
+function buildReportCSV(){
  const rows=[['Transporte','Data','Categoria','Representante','Passageiros','Status','Paradas confirmadas','Total de paradas','Chegada']];
  for(const t of state.transports){
    const h=hist(t), stops=(t.stops||[]).filter(x=>x.kind!=="chegada"), arrival=(t.stops||[]).find(x=>x.kind==="chegada");
-   const passengers=Number.isFinite(Number(t.passengers))?Number(t.passengers):stops.reduce((a,x)=>a+(Number.isFinite(Number(x.qty))?Number(x.qty):0),0);
-   rows.push([t.number,t.date,t.category,t.representative,passengers,statusText(t),h.stops?.length||0,stops.length,arrival?.time||'']);
+   rows.push([t.number,t.date,t.category,t.representative,t.passengers,statusText(t),h.stops?.length||0,stops.length,arrival?.time||'']);
  }
- return rows;
-}
-function buildReportCSV(){
- return '\\uFEFF'+buildReportRows().map(r=>r.map(csvCell).join(';')).join('\\r\\n');
-}
-function xmlEsc(v){return String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;')}
-function xlsxCell(v){return `<c t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`}
-function xlsxSheet(rows){
- const cols='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
- const body=rows.map((row,i)=>`<row r="${i+1}">${row.map((v,j)=>xlsxCell(v)).join('')}</row>`).join('');
- const lastCol=cols[Math.max(0,(rows[0]?.length||1)-1)];
- return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastCol}${rows.length||1}"/><sheetData>${body}</sheetData></worksheet>`;
-}
-function crc32(bytes){
- let c=0xFFFFFFFF;
- for(const b of bytes){c^=b;for(let k=0;k<8;k++)c=(c>>>1)^((c&1)?0xEDB88320:0)}
- return (c^0xFFFFFFFF)>>>0;
-}
-function u16le(n){return new Uint8Array([n&255,(n>>>8)&255])}
-function u32le(n){return new Uint8Array([n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255])}
-function concatBytes(parts){let total=0;for(const p of parts)total+=p.length;const out=new Uint8Array(total);let o=0;for(const p of parts){out.set(p,o);o+=p.length}return out}
-function zipStore(files){
- const enc=new TextEncoder(), locals=[], centrals=[];let offset=0;
- for(const file of files){
-   const name=enc.encode(file.name),data=typeof file.data==='string'?enc.encode(file.data):file.data;
-   const crc=crc32(data);
-   const local=concatBytes([new Uint8Array([0x50,0x4b,0x03,0x04]),u16le(20),u16le(0),u16le(0),u16le(0),u16le(0),u32le(crc),u32le(data.length),u32le(data.length),u16le(name.length),u16le(0),name,data]);
-   locals.push(local);
-   const central=concatBytes([new Uint8Array([0x50,0x4b,0x01,0x02]),u16le(20),u16le(20),u16le(0),u16le(0),u16le(0),u16le(0),u32le(crc),u32le(data.length),u32le(data.length),u16le(name.length),u16le(0),u16le(0),u16le(0),u16le(0),u32le(0),u32le(offset),name]);
-   centrals.push(central);offset+=local.length;
- }
- const cd=concatBytes(centrals),all=concatBytes(locals);
- const eocd=concatBytes([new Uint8Array([0x50,0x4b,0x05,0x06]),u16le(0),u16le(0),u16le(files.length),u16le(files.length),u32le(cd.length),u32le(all.length),u16le(0)]);
- return concatBytes([all,cd,eocd]);
-}
-function buildXlsx(){
- const rows=buildReportRows();
- const ts=state.transports;
- const pending=ts.filter(t=>status(t)==='pending'),progress=ts.filter(t=>status(t)==='progress'),done=ts.filter(t=>status(t)==='done');
- const confirmed=ts.reduce((n,t)=>n+(hist(t).stops?.length||0),0);
- const totalStops=ts.reduce((n,t)=>n+(t.stops||[]).filter(x=>x.kind!=="chegada").length,0);
- const passengers=ts.reduce((n,t)=>{const stops=(t.stops||[]).filter(x=>x.kind!=="chegada");const q=Number(t.passengers);return n+(Number.isFinite(q)?q:stops.reduce((a,x)=>a+(Number.isFinite(Number(x.qty))?Number(x.qty):0),0))},0);
- const summary=[
-   ['JEBs 2026 — RELATÓRIO OPERACIONAL'],
-   ['Indicador','Quantidade'],
-   ['Transportes cadastrados',ts.length],
-   ['Pendentes',pending.length],
-   ['Em andamento',progress.length],
-   ['Concluídos',done.length],
-   ['Paradas confirmadas',confirmed],
-   ['Total de paradas',totalStops],
-   ['Passageiros',passengers],
-   [],
-   ['TRANSPORTES'],
-   ...rows
- ];
- const files=[
-  {name:'[Content_Types].xml',data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`},
-  {name:'_rels/.rels',data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`},
-  {name:'xl/workbook.xml',data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Resumo" sheetId="1" r:id="rId1"/><sheet name="Transportes" sheetId="2" r:id="rId2"/></sheets></workbook>`},
-  {name:'xl/_rels/workbook.xml.rels',data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/></Relationships>`},
-  {name:'xl/worksheets/sheet1.xml',data:xlsxSheet(summary)},
-  {name:'xl/worksheets/sheet2.xml',data:xlsxSheet(rows)}
- ];
- return zipStore(files);
+ return '\\uFEFF'+rows.map(r=>r.map(csvCell).join(';')).join('\\r\\n');
 }
 function downloadReport(){
- try{
-   const data=buildXlsx();
-   const blob=new Blob([data],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-   const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='JEBs_2026_Relatorio.xlsx';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
- }catch(e){console.error('Erro ao gerar Excel:',e);alert('Não foi possível gerar o arquivo Excel: '+(e?.message||e));}
+ const blob=new Blob([buildReportCSV()],{type:'text/csv;charset=utf-8;'});
+ const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='JEBs_2026_Relatorio.csv';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 if(state.view==="relatorios"){
    const ts=state.transports,p=ts.filter(t=>status(t)==="pending"),pr=ts.filter(t=>status(t)==="progress"),d=ts.filter(t=>status(t)==="done");
@@ -662,21 +594,12 @@ function toggleStep(i){
  h.done=h.steps[0]&&h.steps[1]&&h.steps[2];
  persist();render();openTransport(t.id);
 }
-async async function completeTransport(){
+function completeTransport(){
  const t=state.current;if(!t)return;
  const h=hist(t);
  h.steps=[true,true,true];h.done=true;
  h.stops=(t.stops||[]).map((x,i)=>x.kind!=="chegada"?i:null).filter(x=>x!==null);
- // Conclusão é uma ação crítica: grava no servidor imediatamente antes de fechar.
- // Assim, uma atualização de página não consegue voltar ao estado anterior.
- localRevision++;
- localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
- const ok=await serverSync({forceHistoryIds:[t.id]});
- if(!ok){
-   // Mantém o estado local e deixa a sincronização em fila para uma nova tentativa.
-   queueServerSync();
- }
- closeModal();render();
+ persist();closeModal();render();
 }
 function reopenTransport(){
  const t=state.current;if(!t)return;
