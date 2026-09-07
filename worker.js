@@ -1,13 +1,11 @@
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status,
-  headers: {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-    'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'Content-Type'
-  }
+  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
 });
+
+function safeParse(value, fallback = null) {
+  try { return JSON.parse(value); } catch { return fallback; }
+}
 
 function mergeHistory(base = {}, incoming = {}) {
   const out = { ...base };
@@ -33,14 +31,14 @@ function mergeHistory(base = {}, incoming = {}) {
 
 async function readState(env) {
   const [trs, hist, conv] = await Promise.all([
-    env.DB.prepare('SELECT id, data FROM transports ORDER BY id').all(),
+    env.DB.prepare('SELECT id, data FROM transports ORDER BY rowid').all(),
     env.DB.prepare('SELECT id, data FROM transport_history').all(),
     env.DB.prepare('SELECT person_key, status FROM conv_status').all()
   ]);
-  const transports = (trs.results || []).map(r => JSON.parse(r.data));
-  const history = Object.fromEntries((hist.results || []).map(r => [r.id, JSON.parse(r.data)]));
+  const transports = (trs.results || []).map(r => safeParse(r.data)).filter(Boolean);
+  const history = Object.fromEntries((hist.results || []).map(r => [r.id, safeParse(r.data, {})]));
   const convStatuses = Object.fromEntries((conv.results || []).map(r => [r.person_key, r.status]));
-  return { transports, history, convStatuses, initialized: transports.length > 0 };
+  return { transports, history, convStatuses, initialized: transports.length > 0, timestamp: new Date().toISOString() };
 }
 
 async function writeState(env, payload) {
@@ -49,32 +47,38 @@ async function writeState(env, payload) {
   const convStatuses = payload?.convStatuses || {};
   const replaceTransports = payload?.replaceTransports === true;
 
-  const historyIds = Object.keys(incomingHistory).filter(Boolean);
+  // Never perform an authoritative replacement with an empty list.
+  if (replaceTransports && transports.length === 0) {
+    return json({ ok: false, error: 'Não é permitido substituir a lista de transportes por uma lista vazia.' }, 400);
+  }
+
+  // Merge incoming history with the database first so a device can never erase
+  // a check-in recorded elsewhere.
   const existingHistory = {};
+  const historyIds = Object.keys(incomingHistory).filter(Boolean);
   if (historyIds.length) {
-    for (let i = 0; i < historyIds.length; i += 90) {
-      const chunk = historyIds.slice(i, i + 90);
-      const placeholders = chunk.map(() => '?').join(',');
-      const rows = await env.DB.prepare(
-        `SELECT id, data FROM transport_history WHERE id IN (${placeholders})`
-      ).bind(...chunk).all();
-      for (const row of rows.results || []) {
-        try { existingHistory[row.id] = JSON.parse(row.data); } catch {}
-      }
+    const placeholders = historyIds.map(() => '?').join(',');
+    const rows = await env.DB.prepare(
+      `SELECT id, data FROM transport_history WHERE id IN (${placeholders})`
+    ).bind(...historyIds).all();
+    for (const row of rows.results || []) {
+      const parsed = safeParse(row.data);
+      if (parsed) existingHistory[row.id] = parsed;
     }
   }
   const history = mergeHistory(existingHistory, incomingHistory);
 
-  const batch = [];
+  const statements = [];
+
   if (replaceTransports) {
-    // Full spreadsheet import: the imported list is authoritative.
-    // History is intentionally NOT deleted.
-    await env.DB.prepare('DELETE FROM transports').run();
+    // The uploaded spreadsheet is authoritative. This is what makes a second
+    // import of the same 122-row planilha remain 122 instead of 244/366/etc.
+    statements.push(env.DB.prepare('DELETE FROM transports'));
   }
 
   for (const t of transports) {
     if (!t?.id) continue;
-    batch.push(env.DB.prepare(
+    statements.push(env.DB.prepare(
       `INSERT INTO transports (id, data, updated_at)
        VALUES (?, ?, datetime('now'))
        ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at`
@@ -83,7 +87,7 @@ async function writeState(env, payload) {
 
   for (const [id, value] of Object.entries(history)) {
     if (!id) continue;
-    batch.push(env.DB.prepare(
+    statements.push(env.DB.prepare(
       `INSERT INTO transport_history (id, data, updated_at)
        VALUES (?, ?, datetime('now'))
        ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at`
@@ -92,24 +96,19 @@ async function writeState(env, payload) {
 
   for (const [personKey, status] of Object.entries(convStatuses)) {
     if (!personKey) continue;
-    batch.push(env.DB.prepare(
+    statements.push(env.DB.prepare(
       `INSERT INTO conv_status (person_key, status, updated_at)
        VALUES (?, ?, datetime('now'))
        ON CONFLICT(person_key) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at`
     ).bind(String(personKey), String(status)));
   }
 
-  if (batch.length) {
-    for (let i = 0; i < batch.length; i += 90) {
-      await env.DB.batch(batch.slice(i, i + 90));
-    }
-  }
-  return readState(env);
+  if (statements.length) await env.DB.batch(statements);
+  return json(await readState(env));
 }
 
 export default {
   async fetch(request, env) {
-    if (request.method === 'OPTIONS') return json({ ok: true });
     const url = new URL(request.url);
     try {
       if (url.pathname === '/api/state' && request.method === 'GET') {
@@ -117,7 +116,7 @@ export default {
       }
       if (url.pathname === '/api/state' && request.method === 'POST') {
         const payload = await request.json();
-        return json(await writeState(env, payload));
+        return writeState(env, payload);
       }
       if (url.pathname === '/api/health') {
         await env.DB.prepare('SELECT 1').first();
