@@ -513,12 +513,12 @@ function render(){
    const ts=state.transports,p=ts.filter(t=>status(t)==="pending"),pr=ts.filter(t=>status(t)==="progress"),d=ts.filter(t=>status(t)==="done");
    if(state.reportFilter){
      const map={pending:[p,'Pendentes','rp1'],progress:[pr,'Em andamento','rp2'],done:[d,'Concluídos','rp3']}; const [arr,label,cls]=map[state.reportFilter];
-     c.innerHTML=`<div class="pageTop"><button class="backBtn" id="backReports">‹ Relatórios</button><div><div class="eyebrow">RELATÓRIO</div><h2>${label}</h2></div></div><button class="primary downloadXls" id="downloadReportFiltered" type="button" style="margin:0 0 16px">⬇ Baixar informações em Excel (.XLS)</button><div class="reportResults">${arr.length?arr.map(card).join(''):'<div class="empty">Nenhum transporte neste relatório.</div>'}</div>`;
-     $("backReports").onclick=()=>{state.reportFilter=null;render()}; $("downloadReportFiltered").onclick=downloadTransportReport; c.querySelectorAll('.transportCard').forEach(el=>el.onclick=()=>openTransport(decodeURIComponent(el.dataset.id))); return;
+     c.innerHTML=`<div class="pageTop"><button class="backBtn" id="backReports">‹ Relatórios</button><div><div class="eyebrow">RELATÓRIO</div><h2>${label}</h2></div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 16px"><button class="primary downloadXls" id="downloadReportFiltered" type="button">⬇ Baixar CSV</button><button class="primary downloadXls" id="viewReportFiltered" type="button">👁 Visualizar</button></div><div class="reportResults">${arr.length?arr.map(card).join(''):'<div class="empty">Nenhum transporte neste relatório.</div>'}</div>`;
+     $("backReports").onclick=()=>{state.reportFilter=null;render()}; $("downloadReportFiltered").onclick=downloadTransportReport; $("viewReportFiltered").onclick=()=>viewTransportReport(); c.querySelectorAll('.transportCard').forEach(el=>el.onclick=()=>openTransport(decodeURIComponent(el.dataset.id))); return;
    }
    const rl=(arr,label,cls)=>`<button class="reportBig ${cls}" data-report="${cls}"><b>${arr.length}</b><span>${label}</span><i>›</i></button>`;
-   c.innerHTML=`<div class="pageTop"><button class="backBtn" id="backHome">‹ Início</button><div><div class="eyebrow">ACOMPANHAMENTO</div><h2>Relatórios</h2></div></div><button class="primary downloadXls" id="downloadReport" type="button" style="margin:0 0 16px">⬇ Baixar informações em Excel (.XLS)</button><div class="reportHero"><div><small>TRANSPORTES</small><b>${ts.length}</b><span>cadastrados</span></div><div><small>CONCLUÍDOS</small><b>${d.length}</b><span>finalizados</span></div></div><div class="reportGrid">${rl(p,'Pendentes','rp1')}${rl(pr,'Em andamento','rp2')}${rl(d,'Concluídos','rp3')}</div>`;
-   $("backHome").onclick=()=>{state.view="home";state.reportFilter=null;render()}; $("downloadReport").onclick=downloadTransportReport; c.querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>{state.reportFilter=b.dataset.report==='rp1'?'pending':b.dataset.report==='rp2'?'progress':'done';render()}); return;
+   c.innerHTML=`<div class="pageTop"><button class="backBtn" id="backHome">‹ Início</button><div><div class="eyebrow">ACOMPANHAMENTO</div><h2>Relatórios</h2></div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0 0 16px"><button class="primary downloadXls" id="downloadReport" type="button">⬇ Baixar CSV</button><button class="primary downloadXls" id="viewReport" type="button">👁 Visualizar</button></div><div class="reportHero"><div><small>TRANSPORTES</small><b>${ts.length}</b><span>cadastrados</span></div><div><small>CONCLUÍDOS</small><b>${d.length}</b><span>finalizados</span></div></div><div class="reportGrid">${rl(p,'Pendentes','rp1')}${rl(pr,'Em andamento','rp2')}${rl(d,'Concluídos','rp3')}</div>`;
+   $("backHome").onclick=()=>{state.view="home";state.reportFilter=null;render()}; $("downloadReport").onclick=downloadTransportReport; $("viewReport").onclick=()=>viewTransportReport(); c.querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>{state.reportFilter=b.dataset.report==='rp1'?'pending':b.dataset.report==='rp2'?'progress':'done';render()}); return;
  }
  if(state.view==="convocacoes"){
    const b1=['Atletismo','Atletismo Adaptado','Basquete','Futsal','Ginástica Rítmica','Judô','Karatê','Taekwondo','Vôlei de Praia','Xadrez'];
@@ -618,12 +618,13 @@ function toggleStep(i){
  h.done=h.steps[0]&&h.steps[1]&&h.steps[2];
  persist();render();openTransport(t.id);
 }
-function completeTransport(){
+async function completeTransport(){
  const t=state.current;if(!t)return;
  const h=hist(t);
- // Reabrir é uma ação única: limpa todas as etapas e check-ins deste transporte.
- // Não é necessário clicar em cada parada individualmente.
- if(h.done){
+ // Ação única: concluir ou reabrir. Ao reabrir, limpa etapas/check-ins e
+ // grava imediatamente no servidor antes de permitir que um refresh recupere o estado antigo.
+ const reopening=!!h.done;
+ if(reopening){
    h.done=false;
    h.steps=[false,false,false];
    h.stops=[];
@@ -632,9 +633,13 @@ function completeTransport(){
    h.done=true;
    h.stops=(t.stops||[]).map((x,i)=>x.kind!=="chegada"?i:null).filter(x=>x!==null);
  }
- persist();
+ localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
  render();
  openTransport(t.id);
+ // Não esperar o timer de 350ms: esta ação precisa ser persistida já.
+ try{ await serverSync(); }catch(e){ console.warn("Nexus save:",e); }
+ render();
+ if(state.current && state.current.id===t.id && $("modal").classList.contains("open")) openTransport(t.id);
 }
 function closeModal(){
  if($("search")){ $("search").value=""; updateSearchClear(); }
@@ -868,52 +873,32 @@ async function importWorkbook(file){
    alert(`Planilha importada com sucesso: ${imported.length} transporte(s). O histórico de check-ins foi preservado.`);
  }catch(err){console.error(err);alert("Erro ao importar a planilha: "+(err?.message||err));}
 }
-function downloadTransportReport(){
+function buildTransportReportRows(){
   const ts=[...state.transports];
-  const escX=v=>String(v??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   const statusLabel=t=>({pending:"PENDENTE",progress:"EM ANDAMENTO",done:"CONCLUÍDO"}[status(t)]||"");
   const rows=ts.map(t=>{
     const h=hist(t), stops=(t.stops||[]).filter(x=>x.kind!=="chegada"), arrival=(t.stops||[]).find(x=>x.kind==="chegada");
-    const checkins=(h.stops||[]).length;
-    const routeText=route(t);
-    return [
-      statusLabel(t), t.category==="retorno"?"RETORNO":"EMBARQUE", t.number, t.date,
-      t.representative||"", t.contact||"", t.distance||"",
-      passengerCount(t),
-      routeText, arrival?normalizeTime(arrival.time):"", arrival?.destination||"",
-      h.steps?.[0]?"SIM":"NÃO", h.steps?.[1]?"SIM":"NÃO", h.steps?.[2]?"SIM":"NÃO",
-      h.done?"SIM":"NÃO", checkins, stops.length,
-      stops.map((x,i)=>`${i+1}. ${x.municipio||""} | ${normalizeTime(x.time)} | ${x.qty||0} pax | ${x.destination||""}`).join("\n")
-    ];
+    return [statusLabel(t),t.category==="retorno"?"RETORNO":"EMBARQUE",t.number,t.date,t.representative||"",t.contact||"",t.distance||"",passengerCount(t),route(t),arrival?normalizeTime(arrival.time):"",arrival?.destination||"",h.steps?.[0]?"SIM":"NÃO",h.steps?.[1]?"SIM":"NÃO",h.steps?.[2]?"SIM":"NÃO",h.done?"SIM":"NÃO",(h.stops||[]).length,stops.length,stops.map((x,i)=>`${i+1}. ${x.municipio||""} | ${normalizeTime(x.time)} | ${x.qty||0} pax | ${x.destination||""}`).join(" / ")];
   });
-  const headers=["STATUS","TIPO","TRANSPORTE","DATA","REPRESENTANTE","CONTATO","DISTÂNCIA","PASSAGEIROS","ROTA","HORÁRIO DE CHEGADA","DESTINO","EMBARQUE INICIADO","EMBARQUE CONCLUÍDO","CHEGOU AO DESTINO","TRANSPORTE CONCLUÍDO","CHECK-INS","PARADAS","DETALHES DAS PARADAS"];
-  const summary=[
-    ["RESUMO DO ACOMPANHAMENTO"],
-    ["Total de transportes",ts.length],
-    ["Pendentes",ts.filter(t=>status(t)==="pending").length],
-    ["Em andamento",ts.filter(t=>status(t)==="progress").length],
-    ["Concluídos",ts.filter(t=>status(t)==="done").length],
-    ["Passageiros",ts.reduce((a,t)=>a+(Number(t.passengers)||0),0)]
-  ];
-  const table=`<table border="1"><tr>${headers.map(h=>`<th>${escX(h)}</th>`).join("")}</tr>${rows.map(r=>`<tr>${r.map(v=>`<td>${escX(v).replace(/\n/g,"<br>")}</td>`).join("")}</tr>`).join("")}</table>`;
-  const summaryTable=`<table border="1">${summary.map((r,i)=>`<tr>${r.map(v=>`<${i===0?"th":"td"}>${escX(v)}</${i===0?"th":"td"}>`).join("")}</tr>`).join("")}</table>`;
-  const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:Arial;font-size:10pt}table{border-collapse:collapse;margin-bottom:18px}th{font-weight:bold;background:#eee}th,td{padding:5px;border:1px solid #999;vertical-align:top}td{mso-number-format:"\@"}</style></head><body><h2>JEBs 2026 — Relatório de Transportes</h2><p>Gerado em ${escX(new Date().toLocaleString("pt-BR"))}</p>${summaryTable}${table}</body></html>`;
-  const blob=new Blob(["\ufeff"+html],{type:"application/vnd.ms-excel"});
-  const filename=`JEBs_2026_Relatorio_Transportes_${new Date().toISOString().slice(0,10)}.xls`;
-  if(window.navigator && typeof window.navigator.msSaveOrOpenBlob==="function"){
-    window.navigator.msSaveOrOpenBlob(blob,filename);
-    return;
-  }
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement("a");
-  a.style.display="none";
-  a.href=url;
-  a.download=filename;
-  a.setAttribute("download",filename);
-  document.body.appendChild(a);
-  try{a.click();}catch(e){window.open(url,"_blank");}
-  setTimeout(()=>{a.remove();URL.revokeObjectURL(url);},3000);
+  return {headers:["STATUS","TIPO","TRANSPORTE","DATA","REPRESENTANTE","CONTATO","DISTÂNCIA","PASSAGEIROS","ROTA","HORÁRIO DE CHEGADA","DESTINO","EMBARQUE INICIADO","EMBARQUE CONCLUÍDO","CHEGOU AO DESTINO","TRANSPORTE CONCLUÍDO","CHECK-INS","PARADAS","DETALHES DAS PARADAS"],rows};
 }
+function csvCell(v){return '"'+String(v??"").replace(/"/g,'""')+'"'}
+function downloadTransportReport(){
+  const {headers,rows}=buildTransportReportRows();
+  const csv="\ufeff"+[headers,...rows].map(r=>r.map(csvCell).join(";")).join("\r\n");
+  const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
+  const filename=`JEBs_2026_Relatorio_Transportes_${new Date().toISOString().slice(0,10)}.csv`;
+  const url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download=filename;a.style.display="none";document.body.appendChild(a);a.click();
+  setTimeout(()=>{a.remove();URL.revokeObjectURL(url)},1000);
+}
+function viewTransportReport(){
+  const {headers,rows}=buildTransportReportRows();
+  const escX=v=>String(v??"").replace(/[&<>\"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  const html=`<div class="sheet" role="dialog" aria-modal="true"><div class="sheetHead"><div><div class="eyebrow">RELATÓRIO</div><h2>Informações dos transportes</h2><div class="sub">${rows.length} transporte(s)</div></div><button class="closeTop" type="button" data-action="close">Fechar</button></div><div style="overflow:auto;max-height:65vh"><table border="1" style="border-collapse:collapse;width:100%;font-size:11px"><thead><tr>${headers.map(h=>`<th style="padding:7px;background:#f0f2f5;white-space:nowrap">${escX(h)}</th>`).join("")}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(v=>`<td style="padding:6px;vertical-align:top">${escX(v).replace(/\n/g,"<br>")}</td>`).join("")}</tr>`).join("")}</tbody></table></div><button class="primary" type="button" onclick="downloadTransportReport()">⬇ Baixar CSV para abrir no Excel</button><button class="bottomClose" data-action="close" type="button">Fechar</button></div>`;
+  $("modal").innerHTML=html;$("modal").classList.add("open");document.body.classList.add("modalLocked");
+}
+
 function updateSearchClear(){const b=$("clearSearch"),s=$("search");if(b&&s)b.classList.toggle("show",!!s.value)}
 $("search").addEventListener("input",()=>{updateSearchClear();render()});
 $("clearSearch").addEventListener("click",()=>{ $("search").value=""; updateSearchClear(); render(); $("search").focus(); });
