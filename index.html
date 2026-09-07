@@ -369,11 +369,25 @@ async function serverSync(options={}){
     if(syncPending){syncPending=false;setTimeout(()=>serverSync(),0)}
   }
 }
+async function waitForServerIdle(){
+  for(let i=0;i<40 && syncBusy;i++) await new Promise(r=>setTimeout(r,100));
+  return !syncBusy;
+}
 async function saveHistoryDirect(id,value){
-  // Use the same /api/state endpoint as every other write.
-  // The Worker treats forceHistoryIds as an explicit user action, so
-  // true -> false (reopen) and false -> true (complete) are both allowed.
-  return await serverSync({forceHistoryIds:[String(id)]});
+  // Explicit user action: send ONLY this history record.
+  // This avoids an older queued full-state sync overwriting the action.
+  clearTimeout(syncTimer);
+  const ready=await waitForServerIdle();
+  if(!ready)return false;
+  try{
+    const payload={transports:[],history:{[String(id)]:value},convStatuses:{},forceHistoryIds:[String(id)]};
+    const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
+    if(!res.ok)return false;
+    const data=await res.json();
+    if(data?.history?.[String(id)]) state.history[String(id)]=data.history[String(id)];
+    localStorage.setItem('jebsNexusHistory',JSON.stringify(state.history));
+    return true;
+  }catch(e){console.warn('Nexus history save:',e);return false;}
 }
 
 function queueServerSync(){clearTimeout(syncTimer);syncTimer=setTimeout(()=>serverSync(),250)}
@@ -913,6 +927,9 @@ async function importWorkbook(file){
    localRevision++;
    localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
    state.view="categories";state.date=null;state.filter="all";render();
+   clearTimeout(syncTimer);
+   const ready=await waitForServerIdle();
+   if(!ready)throw new Error("Servidor ainda está processando uma gravação anterior. Tente novamente em alguns segundos.");
    const ok=await serverSync({replaceTransports:true});
    if(!ok)throw new Error("Não foi possível gravar a planilha no servidor.");
    alert(`Planilha importada com sucesso: ${state.transports.length} transporte(s). O histórico de check-ins foi preservado.`);
