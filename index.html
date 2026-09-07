@@ -662,7 +662,7 @@ function toggleStep(i){
  h.done=h.steps[0]&&h.steps[1]&&h.steps[2];
  persist();render();openTransport(t.id);
 }
-async function completeTransport(){
+async async function completeTransport(){
  const t=state.current;if(!t)return;
  const h=hist(t);
  h.steps=[true,true,true];h.done=true;
