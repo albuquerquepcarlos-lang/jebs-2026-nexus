@@ -97,6 +97,9 @@ async function writeState(env, payload) {
   const incomingHistory = payload?.history || {};
   const convStatuses = payload?.convStatuses || {};
   const replaceTransports = payload?.replaceTransports === true;
+  const forceHistoryIds = new Set(
+    Array.isArray(payload?.forceHistoryIds) ? payload.forceHistoryIds.map(String).filter(Boolean) : []
+  );
 
   // Preserve the check-in history already stored in D1.
   const historyIds = Object.keys(incomingHistory).filter(Boolean);
@@ -120,6 +123,14 @@ async function writeState(env, payload) {
   }
 
   const history = mergeHistory(existingHistory, incomingHistory);
+
+  // Explicit reopen actions are authoritative: they may clear a completed record.
+  // Normal imports still preserve existing check-ins/completion.
+  for (const id of forceHistoryIds) {
+    if (Object.prototype.hasOwnProperty.call(incomingHistory, id)) {
+      history[id] = incomingHistory[id];
+    }
+  }
 
   // When importing a planilha, the spreadsheet is authoritative for the
   // transport list. Delete the old transport rows first so old imports cannot

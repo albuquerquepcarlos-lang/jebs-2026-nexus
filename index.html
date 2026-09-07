@@ -646,7 +646,7 @@ function openTransport(id){
    ${stepNames.map((s,i)=>`<button type="button" class="step ${h.steps?.[i]?"done":""}" data-step="${i}">
       <span class="stepIcon">${h.steps?.[i]?"✓":""}</span><b>${s}</b>
    </button>`).join("")}
-   <button type="button" class="primary" data-action="complete">✓ Concluir transporte</button>
+   ${h.done?`<button type="button" class="homeActionV18" data-action="reopen">↩ &nbsp; Reabrir transporte</button>`:`<button type="button" class="primary" data-action="complete">✓ Concluir transporte</button>`}
    <button type="button" class="homeActionV18" data-action="home">⌂ &nbsp; INÍCIO</button><button type="button" class="bottomClose" data-action="close">Fechar e voltar</button>
  </div>`;
  $("modal").classList.add("open"); document.body.classList.add("modalLocked");
