@@ -370,13 +370,10 @@ async function serverSync(options={}){
   }
 }
 async function saveHistoryDirect(id,value){
-  try{
-    const res=await fetch('/api/history',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:String(id),data:value}),cache:'no-store'});
-    if(!res.ok) throw new Error('Servidor de dados indisponível');
-    const out=await res.json();
-    if(!out?.ok) throw new Error(out?.error||'Não foi possível salvar o histórico');
-    return true;
-  }catch(e){console.warn('Nexus history save:',e);return false}
+  // Use the same /api/state endpoint as every other write.
+  // The Worker treats forceHistoryIds as an explicit user action, so
+  // true -> false (reopen) and false -> true (complete) are both allowed.
+  return await serverSync({forceHistoryIds:[String(id)]});
 }
 
 function queueServerSync(){clearTimeout(syncTimer);syncTimer=setTimeout(()=>serverSync(),250)}
