@@ -662,12 +662,21 @@ function toggleStep(i){
  h.done=h.steps[0]&&h.steps[1]&&h.steps[2];
  persist();render();openTransport(t.id);
 }
-function completeTransport(){
+async function completeTransport(){
  const t=state.current;if(!t)return;
  const h=hist(t);
  h.steps=[true,true,true];h.done=true;
  h.stops=(t.stops||[]).map((x,i)=>x.kind!=="chegada"?i:null).filter(x=>x!==null);
- persist();closeModal();render();
+ // Conclusão é uma ação crítica: grava no servidor imediatamente antes de fechar.
+ // Assim, uma atualização de página não consegue voltar ao estado anterior.
+ localRevision++;
+ localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
+ const ok=await serverSync({forceHistoryIds:[t.id]});
+ if(!ok){
+   // Mantém o estado local e deixa a sincronização em fila para uma nova tentativa.
+   queueServerSync();
+ }
+ closeModal();render();
 }
 function reopenTransport(){
  const t=state.current;if(!t)return;
