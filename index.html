@@ -351,6 +351,7 @@ function normKeyPart(value){
 function stableKey(t){return String(t.sourceKey||t.id||`${t.category||"embarque"}|${String(t.number??"")}|${String(t.date||"")}`)}
 function migrateHistory(){const next={...state.history}; for(const t of state.transports){const k=stableKey(t); if(!next[k]&&next[t.id]) next[k]=next[t.id]; if(next[k]) state.history[t.id]=next[k];} }
 migrateHistory();;
+const API_BASE='https://jebs-2026-nexus.albuquerque-pcarlos.workers.dev';
 let syncBusy=false, syncPending=false, syncTimer=null, localRevision=0;
 async function serverSync(options={}){
   if(syncBusy){syncPending=true;return false;}
@@ -359,7 +360,7 @@ async function serverSync(options={}){
     const payload={transports:state.transports,history:state.history,convStatuses:state.convStatuses||{}};
     if(options.replaceTransports) payload.replaceTransports=true;
     if(Array.isArray(options.forceHistoryIds)) payload.forceHistoryIds=options.forceHistoryIds;
-    const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
+    const res=await fetch(API_BASE+'/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
     if(!res.ok) throw new Error('Servidor de dados indisponível');
     await res.json();
     return true;
@@ -381,7 +382,7 @@ async function saveHistoryDirect(id,value){
   if(!ready)return false;
   try{
     const payload={transports:[],history:{[String(id)]:value},convStatuses:{},forceHistoryIds:[String(id)]};
-    const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
+    const res=await fetch(API_BASE+'/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
     if(!res.ok)return false;
     const data=await res.json();
     if(data?.history?.[String(id)]) state.history[String(id)]=data.history[String(id)];
@@ -394,7 +395,7 @@ function queueServerSync(){clearTimeout(syncTimer);syncTimer=setTimeout(()=>serv
 async function hydrateFromServer(){
   const revisionAtStart=localRevision;
   try{
-    const res=await fetch('/api/state',{cache:'no-store'});
+    const res=await fetch(API_BASE+'/api/state',{cache:'no-store'});
     if(!res.ok) throw new Error('Servidor de dados indisponível');
     const data=await res.json();
     if(revisionAtStart!==localRevision) return;
