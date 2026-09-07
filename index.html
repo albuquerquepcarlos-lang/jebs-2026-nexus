@@ -340,6 +340,14 @@ body.modalLocked{overflow:hidden!important;touch-action:none!important;}
 <div id="modal" class="modal"></div>
 <script>
 const INITIAL_TRANSPORTS=[];const state={transports:INITIAL_TRANSPORTS.slice(),view:"home",category:"embarque",date:null,filter:"all",current:null,reportFilter:null,programBlock:null,convModal:null,history:(()=>{try{return JSON.parse(localStorage.getItem("jebsNexusHistory")||"{}")}catch(e){return {}}})(),convStatuses:(()=>{try{return JSON.parse(localStorage.getItem("jebsNexusConvStatuses")||"{}")}catch(e){return {}}})()};
+function normKeyPart(value){
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toUpperCase() || "SEM_NOME";
+}
 function stableKey(t){return String(t.sourceKey||t.id||`${t.category||"embarque"}|${String(t.number??"")}|${String(t.date||"")}`)}
 function migrateHistory(){const next={...state.history}; for(const t of state.transports){const k=stableKey(t); if(!next[k]&&next[t.id]) next[k]=next[t.id]; if(next[k]) state.history[t.id]=next[k];} }
 migrateHistory();;
