@@ -281,8 +281,7 @@ main{max-width:1100px;padding:18px 16px 70px}
  .homeQuickRowV21 .homeSmallV21 .v21Copy small{font-size:9px!important}
  .operationIntro h2{font-size:19px!important}
 }
-.reportDownloadBtn{width:100%;border:0;border-radius:18px;padding:15px 18px;margin:14px 0 16px;background:linear-gradient(135deg,#10b978,#078f58);color:#fff;font-weight:1000;font-size:14px;box-shadow:0 10px 24px rgba(16,27,63,.12);cursor:pointer;touch-action:manipulation}.reportDownloadBtn:active{transform:translateY(1px)}
-</style>
+.downloadReportBtn{display:block;width:100%;margin:14px 0 18px;border:0;border-radius:18px;padding:17px 20px;background:var(--navy);color:#fff;font:900 15px inherit;cursor:pointer;box-shadow:0 10px 24px rgba(16,27,63,.12);touch-action:manipulation}.downloadReportBtn:active{transform:translateY(1px)}</style>
 <style id="v22-2-fixes">
 /* V22.2 — mobile-safe status navigation and compact logo card */
 .heroV20 .heroBrandImage{
@@ -341,74 +340,58 @@ body.modalLocked{overflow:hidden!important;touch-action:none!important;}
 <div id="modal" class="modal"></div>
 <script>
 const INITIAL_TRANSPORTS=[];const state={transports:INITIAL_TRANSPORTS.slice(),view:"home",category:"embarque",date:null,filter:"all",current:null,reportFilter:null,programBlock:null,convModal:null,history:(()=>{try{return JSON.parse(localStorage.getItem("jebsNexusHistory")||"{}")}catch(e){return {}}})(),convStatuses:(()=>{try{return JSON.parse(localStorage.getItem("jebsNexusConvStatuses")||"{}")}catch(e){return {}}})()};
-function normKeyPart(v){return String(v??"").trim().toUpperCase().replace(/\s+/g," ");}
-function stableKey(t){
- if(t?.sourceKey)return String(t.sourceKey);
- const sheet=normKeyPart(t?.sheet||""), row=Number(t?.row||0);
- if(sheet&&row)return `${t?.category||"embarque"}|${sheet}|ROW|${row}`;
- const first=(t?.stops||[]).find(x=>x.kind!=="chegada")||{};
- const municipalities=(t?.stops||[]).filter(x=>x.kind!=="chegada").map(x=>normKeyPart(x.municipio)).join("~");
- const times=(t?.stops||[]).filter(x=>x.kind!=="chegada").map(x=>String(x.time||"").trim()).join("~");
- return `${t?.category||"embarque"}|${String(t?.number??"")}|${String(t?.date||"")}|${municipalities}|${times}|${normKeyPart(first.destination)}`;
+function stableKey(t){return String(t.sourceKey||t.id||`${t.category||"embarque"}|${String(t.number??"")}|${String(t.date||"")}`)}
+function migrateHistory(){const next={...state.history}; for(const t of state.transports){const k=stableKey(t); if(!next[k]&&next[t.id]) next[k]=next[t.id]; if(next[k]) state.history[t.id]=next[k];} }
+migrateHistory();;
+let syncBusy=false, syncPending=false, syncTimer=null, localRevision=0;
+async function serverSync(options={}){
+  if(syncBusy){syncPending=true;return false;}
+  syncBusy=true;
+  const sentRevision=localRevision;
+  try{
+    const payload={transports:state.transports,history:state.history,convStatuses:state.convStatuses||{}};
+    if(options.replaceTransports) payload.replaceTransports=true;
+    const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),cache:'no-store'});
+    if(!res.ok) throw new Error('Servidor de dados indisponível');
+    await res.json();
+    return true;
+  }catch(e){console.warn('Nexus DB sync:',e);return false}
+  finally{
+    syncBusy=false;
+    if(syncPending){syncPending=false;setTimeout(()=>serverSync(),0)}
+  }
 }
-function migrateHistory(){
- const next={...state.history};
- for(const t of state.transports){const k=stableKey(t);if(!next[k]&&next[t.id])next[k]=next[t.id];if(next[k])state.history[k]=next[k];t.id=k;t.sourceKey=t.sourceKey||k;}
- state.history={...next,...state.history};
+function queueServerSync(){clearTimeout(syncTimer);syncTimer=setTimeout(()=>serverSync(),250)}
+async function hydrateFromServer(){
+  const revisionAtStart=localRevision;
+  try{
+    const res=await fetch('/api/state',{cache:'no-store'});
+    if(!res.ok) throw new Error('Servidor de dados indisponível');
+    const data=await res.json();
+    if(revisionAtStart!==localRevision) return;
+    if(Array.isArray(data?.transports)) state.transports=data.transports;
+    if(data?.history) state.history={...(state.history||{}),...(data.history||{})};
+    if(data?.convStatuses) state.convStatuses={...(state.convStatuses||{}),...(data.convStatuses||{})};
+    migrateHistory();
+    localStorage.setItem('jebsNexusHistory',JSON.stringify(state.history));
+    localStorage.setItem('jebsNexusConvStatuses',JSON.stringify(state.convStatuses||{}));
+    render();
+  }catch(e){console.warn('Nexus DB load:',e)}
 }
-migrateHistory();
-const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));
+
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
 const hist=t=>{if(!state.history[t.id])state.history[t.id]={stops:[],steps:[false,false,false],done:false};const h=state.history[t.id];h.stops=Array.isArray(h.stops)?h.stops:[];h.steps=Array.isArray(h.steps)?h.steps:[false,false,false];while(h.steps.length<3)h.steps.push(false);h.done=!!h.done;return h;};
 function status(t){const h=hist(t);if(h.done)return"done";if((h.steps||[]).some(Boolean)||(h.stops||[]).length)return"progress";return"pending"}
 function statusText(t){return {pending:"PENDENTE",progress:"EM ANDAMENTO",done:"CONCLUÍDO"}[status(t)]}
-let syncTimer=null,syncBusy=false,syncPending=false,localRevision=0,syncWaiters=[];
-function persist(){localRevision++;localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));queueServerSync();}
-function persistConvStatuses(){localRevision++;localStorage.setItem("jebsNexusConvStatuses",JSON.stringify(state.convStatuses||{}));queueServerSync();}
-function normalizeLocalState(){
- const byId=new Map(),nextHistory={...state.history};
- for(const t of state.transports||[]){const key=stableKey(t);if(nextHistory[key]===undefined&&nextHistory[t.id]!==undefined)nextHistory[key]=nextHistory[t.id];t.id=key;t.sourceKey=t.sourceKey||key;byId.set(key,t);}
- state.transports=[...byId.values()];state.history=nextHistory;
-}
-function resolveSyncWaiters(value){const w=syncWaiters.splice(0);w.forEach(fn=>fn(value));}
-function waitForSync(){return new Promise(resolve=>syncWaiters.push(resolve));}
-async function persistNow(){normalizeLocalState();localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));localRevision++;return serverSync();}
-async function serverSync(options={}){
- if(syncBusy){syncPending=true;if(options.replaceTransports)return waitForSync().then(()=>serverSync(options));return false;}
- syncBusy=true;const sentRevision=localRevision;
- try{
-  normalizeLocalState();
-  const payload={transports:state.transports,history:state.history,convStatuses:state.convStatuses||{}};
-  if(options.replaceTransports)payload.replaceTransports=true;
-  const res=await fetch('/api/state',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
-  if(!res.ok)throw new Error('Servidor de dados indisponível');
-  const data=await res.json();
-  // Never let an older network response overwrite a newer local click/import.
-  if(localRevision===sentRevision){
-   if(Array.isArray(data?.transports))state.transports=data.transports;
-   if(data?.history)state.history=data.history;
-   if(data?.convStatuses)state.convStatuses=data.convStatuses;
-   normalizeLocalState();localStorage.setItem('jebsNexusHistory',JSON.stringify(state.history));localStorage.setItem('jebsNexusConvStatuses',JSON.stringify(state.convStatuses||{}));
-  }
-  return true;
- }catch(e){console.warn('Nexus DB sync:',e);return false}
- finally{
-  syncBusy=false;
-  if(syncPending){syncPending=false;setTimeout(()=>serverSync(),0)}
-  resolveSyncWaiters(true);
- }
-}
-function queueServerSync(){clearTimeout(syncTimer);syncTimer=setTimeout(()=>serverSync(),350)}
-async function hydrateFromServer(){
- try{const res=await fetch('/api/state',{cache:'no-store'});if(!res.ok)throw new Error('Servidor de dados indisponível');const data=await res.json();
-  if(data?.initialized&&Array.isArray(data.transports)){state.transports=data.transports;state.history={...(state.history||{}),...(data.history||{})};state.convStatuses={...(state.convStatuses||{}),...(data.convStatuses||{})};normalizeLocalState();localStorage.setItem('jebsNexusHistory',JSON.stringify(state.history));localStorage.setItem('jebsNexusConvStatuses',JSON.stringify(state.convStatuses||{}));render();}
- }catch(e){console.warn('Nexus DB load:',e)}
+function persist(){
+ localRevision++;
+ localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
+ localStorage.setItem("jebsNexusConvStatuses",JSON.stringify(state.convStatuses||{}));
+ queueServerSync();
 }
 function route(t){const first=t.stops?.find(s=>s.kind!=="chegada")?.municipio||"Origem";const a=t.stops?.find(s=>s.kind==="chegada");return first+" → "+(a?.destination||t.stops?.at(-1)?.destination||"Destino")}
 function renderStats(){const ts=state.transports;[["total",ts.length],["pending",ts.filter(t=>status(t)==="pending").length],["progress",ts.filter(t=>status(t)==="progress").length],["done",ts.filter(t=>status(t)==="done").length]].forEach(([id,value])=>{const el=$(id);if(el)el.textContent=value})}
 const CONVOCADOS={"BLOCO 1":{"Atletismo":[{"nome":"ALBERTH NATHAN MAGALHÃES DE JESUS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SANTANA DE PARNAIBA","escola":"JOAO JOSE DE OLIVEIRA PREF COLEGIO MUNICIPAL"},{"nome":"ANA CAROLINA CUTRIM DE CAMPOS","funcao":"ATLETA","sexo":"FEMININO","cidade":"CAMPINAS","escola":"CLAUDIA FRANCISCO DA SILVA"},{"nome":"ANNA LUIZA DE OLIVEIRA FARIA SERRA FLORIANO","funcao":"ATLETA","sexo":"FEMININO","cidade":"GUARIBA","escola":"MARIA CECILIA PACIFICO DE FARIA PROFA EMEB"},{"nome":"ANTONIO CARLOS LOPES DA SILVA","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SOROCABA","escola":"---"},{"nome":"BEATRIZ DE PAULA SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SOROCABA","escola":"MARIA ONDINA ANDRADE PROF"},{"nome":"BRENNO DOS SANTOS SILVA FILHO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"BAURU","escola":"COLEGIO PREVE BAURU"},{"nome":"CAMILLY VITÓRIA DA CRUZ ANTUNES","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"SESI 166 CENTRO EDUCACIONAL"},{"nome":"DAVI LUCA BENTO EUGÊNIO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO JOAQUIM DA BARAA","escola":"GENOVEVA PINHEIRO VIEIRA DE VITTA PROFESSORA"},{"nome":"ELIANA GARCEZ DE OLIVEIRA","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"CAMPINAS","escola":"---"},{"nome":"EMANUELLY VITORIA DA SILVA ROMERO","funcao":"ATLETA","sexo":"FEMININO","cidade":"BAURU","escola":"MARIA APARECIDA MASCHIETTO OKAZAKI PROFESSORA"},{"nome":"GRAZIELLI VITORIA ALVES ARAUJO","funcao":"ATLETA","sexo":"FEMININO","cidade":"CANDIDO MOTA","escola":"CLOTILDE DE CASTRO BARREIRA PROFA"},{"nome":"HEITOR VIEIRA BRAZ","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SOROCABA","escola":"SOROCABANA ORGANIZACAO DE ENSINO INSTITUTO EDUCACAO"},{"nome":"HENRICK DE OLIVEIRA DO MONTE MOURA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PRAIA GRANDE","escola":"FORTEC ESCOLA TECNICA UNIDADE II"},{"nome":"HENRIQUE SOARES MAIA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"SERGIO BUARQUE DE HOLANDA COLEGIO"},{"nome":"ISABELA GUESSE BASAGLIA","funcao":"ATLETA","sexo":"FEMININO","cidade":"IRAPUI","escola":"DESOLINA BETTI GREGORIN PROFESSORA"},{"nome":"JOAO DI SERIO SEARA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"AMERICANA","escola":"ANTARES COLEGIO"},{"nome":"JOÃO NICOLAU DOS SANTOS","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"CANDIDO MOTA","escola":"---"},{"nome":"JOAO PEDRO DA SILVA BUENO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"CANDIDO MOTA","escola":"JOSE AUGUSTO DE CARVALHO DR"},{"nome":"JUAN DE SOUZA ESTEVAM","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PEREIRA BARRETO","escola":"MITSUSADA UMETANI DR"},{"nome":"JULIA BARBOSA DOS SANTOS ASSIS","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"EMEF CALOGERAS MIN"},{"nome":"JULIA VICTORIA RODRIGUES VITAL","funcao":"ATLETA","sexo":"FEMININO","cidade":"BARUERI","escola":"MARIA MEDUNECKAS PROFESSORA COMPLEXO EDUCACIONAL"},{"nome":"KAUAN JONATAS OLIVEIRA DAS NEVES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PINDAMONHANGABA","escola":"ALEXANDRINA GOMES DE ARAUJO RODRIGUES PROFESSORA"},{"nome":"LETICIA LEAL GOUVEIA MARTINS","funcao":"ATLETA","sexo":"FEMININO","cidade":"TAUBATE","escola":"SAO LUIS ESCOLA EDUCACAO INFANTIL ENSINO FUNDAMENTAL E MEDIO"},{"nome":"LIVIA CECILIA RIBEIRO APOLINARIO","funcao":"ATLETA","sexo":"FEMININO","cidade":"ITAPIRA","escola":"INTEGRAL APLICADO COLEGIO"},{"nome":"LUANA FIORE SANTOS","funcao":"ATLETA","sexo":"FEMININO","cidade":"FRANCA","escola":"ROBERTO SCARABUCI PROFESSOR"},{"nome":"LUIZ OTAVIO DE BRITO MAZULINE","funcao":"ATLETA","sexo":"MASCULINO","cidade":"REGISTRO","escola":"ESCOLA SESI DE REGISTRO"},{"nome":"MARINA RABELO MENDES","funcao":"ATLETA","sexo":"FEMININO","cidade":"REGISTRO","escola":"ESCOLA SESI DE REGISTRO"},{"nome":"PEDRO HENRIQUE DOS SANTOS ANDRADE","funcao":"ATLETA","sexo":"MASCULINO","cidade":"BIRIGUI","escola":"REGINA VALARINI VIEIRA PROFA"},{"nome":"PEDRO MIGUEL MENDES DE LIMA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"ITAPIRA","escola":"ELVIRA SANTOS DE OLIVEIRA DONA"},{"nome":"PIETRO RAFAEL DOS SANTOS SIQUEIRA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"JACAREI","escola":"MARIA HELENA DENIS FIGUEIREDO PROFA"},{"nome":"RAFAEL TURI DEBRANDI","funcao":"ATLETA","sexo":"MASCULINO","cidade":"BARRA BONITA","escola":"FRANCISCO FERREIRA DELGADO JUNIOR CONEGO"},{"nome":"RAFAELLA GOMES MOTA DE SOUZA","funcao":"ATLETA","sexo":"FEMININO","cidade":"BAURU","escola":"COLEGIO PREVE BAURU"},{"nome":"RAMON FIGUEIREDO AUGUSTAITIZ","funcao":"ATLETA","sexo":"MASCULINO","cidade":"BARUERI","escola":"ITB PROFESSORA DAGMAR RIBAS TRINDADE"},{"nome":"SARAH FILHOU MALANDRIN","funcao":"ATLETA","sexo":"FEMININO","cidade":"ITAPIRA","escola":"ANTONIO CAIO"},{"nome":"VALENTINE PRIMAZ SILVÉRIO DOS SANTOS","funcao":"ATLETA","sexo":"FEMININO","cidade":"MARILIA","escola":"COLEGIO INTERACAO"},{"nome":"VITOR LEMKE MATSUBARA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"LASAR SEGALL"},{"nome":"WILLIAINY SABRINA RODRIGUES SANTOS","funcao":"ATLETA","sexo":"FEMININO","cidade":"JAU","escola":"PROFA CLEOMAR DE BARROS CASTILHO MARQUES"}],"Basquete":[{"nome":"ALEF DANIEL GOMES CHAGAS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"ANA CAROLINA JUSTINO REBECHI DA CRUZ","funcao":"ATLETA","sexo":"FEMININO","cidade":"ITATIBA","escola":"JOAQUIM ABARCA"},{"nome":"ANA JULIA HASTENREITER DE ALMEIDA","funcao":"ATLETA","sexo":"FEMININO","cidade":"TUPA","escola":"JOAQUIM ABARCA"},{"nome":"ANA LÍVIA APARECIDA SANTANA HENRIQUE","funcao":"ATLETA","sexo":"FEMININO","cidade":"TUPA","escola":"JOAQUIM ABARCA"},{"nome":"ARTHUR COSTA DA SILVA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"OSASCO","escola":"COLEGIO AMORIM LTDA"},{"nome":"DAVI FARIA SOARES DE SIQUEIRA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"FERNANDO HENRIQUE ESTEVAM PIMENTEL","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"FERNANDO MOIA DE LIMA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"COLEGIO AMORIM LTDA"},{"nome":"GABRIELLA LESSIA MOREIRA DA SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"TUPA","escola":"JOAQUIM ABARCA"},{"nome":"ISABEL COLOMBANI FONSECA","funcao":"ATLETA","sexo":"FEMININO","cidade":"TUPA","escola":"JOAQUIM ABARCA"},{"nome":"JADEN AKIN OLIVEIRA DA CONCEIÇÃO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"OSASCO","escola":"COLEGIO AMORIM LTDA"},{"nome":"JANAÍNA ACÁCIA COTRIM PEREIRA","funcao":"ATLETA","sexo":"FEMININO","cidade":"TUPA","escola":"JOAQUIM ABARCA"},{"nome":"LAIANY GABRIELLI HASTENREITER DE ALMEIDA","funcao":"ATLETA","sexo":"FEMININO","cidade":"TUPA","escola":"JOAQUIM ABARCA"},{"nome":"MARIA CRISTINA SOARES ROMERA","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"TUPA","escola":"---"},{"nome":"MELISSA CARDOSO VULCANO DE MELO","funcao":"ATLETA","sexo":"FEMININO","cidade":"TUPA","escola":"JOAQUIM ABARCA"},{"nome":"PEDRO JOAQUIM ARMOND PAIXÃO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"PEDRO MABICA ANTONIO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"RICARDO MONTEIRO INACIO BUENO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"SAMIRA DOS SANTOS RAMOS","funcao":"ATLETA","sexo":"FEMININO","cidade":"TUPA","escola":"JOAQUIM ABARCA"},{"nome":"TAINÁ MARTINS SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"TUPA","escola":"JOAQUIM ABARCA"},{"nome":"VINICIUS VIEIRA ALVARENGA RIBEIRO","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"---"}],"Ginástica Rítmica":[{"nome":"ALICE CAROLLINE BARBOSA INACIO","funcao":"ATLETA","sexo":"FEMININO","cidade":"SANTOS","escola":"ADALBERTO SOUZA DA SILVA COLEGIO MODERNO"},{"nome":"BEATRIZ OTA CONSTANTE","funcao":"ATLETA","sexo":"FEMININO","cidade":"SANTOS","escola":"MARIA LUIZA ALONSO SILVA UNIDADE MUNICIPAL DE EDUCACAO"},{"nome":"BEATRIZ SANTOS MUNHOZ","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"SANTOS","escola":"---"},{"nome":"GIOVANA GIFONI CRUZ FERNANDES","funcao":"ATLETA","sexo":"FEMININO","cidade":"SANTOS","escola":"REDE DE ENSINO NOVO TEMPO"},{"nome":"HELOISA ALVES DA SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"PRAIA GRANDE","escola":"FORTEC ESCOLA TECNICA"},{"nome":"YASMIN MAYUMI ARAGUSUKU DE OLIVEIRA","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"SAO VICENTE","escola":"---"}],"Futsal":[{"nome":"ALICIA ALMEIDA SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"CAMILA PEREIRA SÁ TELES MAGINA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"CAROLINE NASCIMENTO BEZERRA DA CONCEIÇÃO","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"CLAUBER MARTINS HERAS","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"---"},{"nome":"FELIPE WILLIAN GUEDES DE LIMA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"GABRIELA FLORENCIO NOLETO LOPES","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"GUILHERME CAPONI","funcao":"ATLETA","sexo":"MASCULINO","cidade":"GUARULHOS","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"GUSTAVO TADEU RIBEIRO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"HELOIZA DE SOUZA PEREIRA","funcao":"ATLETA","sexo":"FEMININO","cidade":"GUARULHOS","escola":"COLEGIO AMORIM LTDA"},{"nome":"ISADORA GUIMARÃES COSTA JARDIM","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"KAUÃ PABLO DO NASCIMENTO BARBOSA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"GUARULHOS","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"KEROLYN VITÓRIA MENEZES DE OLIVEIRA COSTA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"LUAN GREGORATO RAMOS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"MARIA EDUARDA SILVA DOS SANTOS","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"MARIANA BLECHA DA SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"MAUA","escola":"COLEGIO AMORIM LTDA"},{"nome":"MATHEUS DE CONTO FONTOURA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"MURILO ASSIS SABINO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"MURILO GABRIEL VIEIRA RODRIGUES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"MURILO MATTOS VIEIRA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"RAFAELA ALVES SOUZA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM LTDA"},{"nome":"THEO MOREIRA RODRIGUES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"GUARULHOS","escola":"GRUPO EDUCACIONAL DRUMMOND"},{"nome":"VALDIR DE FREITAS","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"GUARULHOS","escola":"---"}],"Taekwondo":[{"nome":"AMANDA MACIEL OLIVEIRA","funcao":"ATLETA","sexo":"FEMININO","cidade":"PIRACICABA","escola":"EDUIR BENEDICTO SCARPARI PROFESSOR"},{"nome":"ANA LUIZA TEIXEIRA PINHEIRO","funcao":"ATLETA","sexo":"FEMININO","cidade":"PINDAMONHANGABA","escola":"ALZIRA FRANCO PROFESSORA"},{"nome":"ANGELINA RIBEIRO DE SOUZA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"EMEF CARLOS DE ANDRADE RIZZINI"},{"nome":"BEATRIZ APARECIDA CARVALHO LUCIANO","funcao":"ATLETA","sexo":"FEMININO","cidade":"PIRACICABA","escola":"Elite Rede de Ensino - Piracicaba"},{"nome":"CARLOS EDUARDO RAUDELIUNAS FILHO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"BATISTA BRASILEIRO COLEGIO"},{"nome":"FABIAN TEODORO LOPES DA SILVA","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"---"},{"nome":"GABRIEL MACHADO DE OLIVEIRA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"SANTA MARCELINA COLEGIO"},{"nome":"HEITOR CARVALHO TEODORO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"23 DE OUTUBRO COLEGIO"},{"nome":"KAMILLA HARUMI MORITANI","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO JOSE DOS CAMPOS","escola":"ILDETE MENDONCA BARBOSA PROFA EMEFI"},{"nome":"LAURA GREBLO GALEAZZI","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO JOSE DOS CAMPOS","escola":"INSTITUTO SAO JOSE"},{"nome":"LUCAS NASCIMENTO VILLAROEL","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"DOMINUS VIVENDI COLEGIO EIFM"},{"nome":"LUCAS OLIVEIRA SALERNO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"COTIA","escola":"SESI 432 CENTRO EDUCACIONAL"},{"nome":"SAMUEL MENDONÇA CHAGAS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO JOSE DOS CAMPOS","escola":"MERCEDES CARNEVALLI KLEIN PROFA EMEFI"},{"nome":"TALITA RODRIGUES LOPES","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"SAO PAULO","escola":"---"}],"Karatê":[{"nome":"ANA JULIA BARTELS DE SIQUEIRA","funcao":"ATLETA","sexo":"FEMININO","cidade":"VALINHOS","escola":"COLEGIO CARPE DIEM"},{"nome":"DAVI LUCA ZANETONI","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SANTANA DE PARNAIBA","escola":"LEDA CAIRA PROFA COLEGIO MUNICIPAL"},{"nome":"ISABELLA PASSOS BARBOSA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"HARMONIA COLEGIO"},{"nome":"JULIA BONGARTHNER FARIAS","funcao":"ATLETA","sexo":"FEMININO","cidade":"PRAIA GRANDE","escola":"COLEGIO CULTURA"},{"nome":"KAUANY ISABELLE SANTOS SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"TABOAO DA SERRA","escola":"FRANCISCO VICENTE LOPES GONCALVES PROFESSOR"},{"nome":"LIVIA CAVALCANTE PESSOA","funcao":"ATLETA","sexo":"FEMININO","cidade":"PRAIA GRANDE","escola":"VILA VERDE CENTRO EDUCACIONAL"},{"nome":"LUCAS MORENO CORREGLIANO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"JABOTICABAL","escola":"UNIDADE JABOTICABAL DE ENSINO COLEGIO"},{"nome":"MIGUEL REIS MENEZES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PRAIA GRANDE","escola":"VILA VERDE CENTRO EDUCACIONAL"},{"nome":"MIGUEL SOUZA RODRIGUES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SANTANA DE PARNAIBA","escola":"ANACLETO DE CAMARGO PADRE COLEGIO MUNICIPAL"},{"nome":"PIETRO HENRIQUE ALVES BATISTA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"TABOAO DA SERRA","escola":"CETS COLEGIO"},{"nome":"SIMONE HATSUMI YONAMINE MOTA","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"JABOTICABAL","escola":"---"},{"nome":"VINICIUS TERTOLINO DO NASCIMENTO","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"TABOAO DA SERRA","escola":"---"}],"Judô":[{"nome":"ANA LUIZA SANTANA DA COSTA","funcao":"ATLETA","sexo":"FEMININO","cidade":"GUARULHOS","escola":"VALDERICE THEREZINHA DA MOTTA CAMPOS MARCHINI PROFESSORA"},{"nome":"ANNA CLARA RIBEIRO RAMOS PARISE","funcao":"ATLETA","sexo":"FEMININO","cidade":"MOGI DAS CRUZES","escola":"IRACEMA BRASIL DE SIQUEIRA PROFESSORA"},{"nome":"ARTHURO LUVIZETTO BENITES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"EMEF THEODOMIRO DIAS DES"},{"nome":"CARLOS EDUARDO HONORATO","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SAO VICENTE","escola":"---"},{"nome":"DANILO SIMÕES SANTANIELLO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"EMEF BARTOLOMEU LOURENCO DE GUSMAO"},{"nome":"DAVI LOMEU TEÓFILO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"ARUJA","escola":"RENE DE OLIVEIRA BARBOSA DR"},{"nome":"GUSTAVO MONTORO YOKOTI","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"CENTRO INTERESCOLAR OBJETIVO UNIDADE TEODORO"},{"nome":"KLARA FERNANDES RIBEIRO","funcao":"ATLETA","sexo":"FEMININO","cidade":"MOGI DAS CRUZES","escola":"MILLENIUM CONSTRUTIVO COLEGIO"},{"nome":"LARESSA AILIME SANTOS TAVARES","funcao":"ATLETA","sexo":"FEMININO","cidade":"MOGI DAS CRUZES","escola":"PLACIDINA DONA INSTITUTO"},{"nome":"LAURA AYUMI GONTIJO KAKUDA","funcao":"ATLETA","sexo":"FEMININO","cidade":"BOTUCATU","escola":"COLEGIO ANGLO BOTUCATU"},{"nome":"LORENA BRITO SANTOS","funcao":"ATLETA","sexo":"FEMININO","cidade":"RIBEIRAO PRETO","escola":"PARQUE DOS SERVIDORES"},{"nome":"MARIA FERNANDA SATHELER FURTADO MORETO","funcao":"ATLETA","sexo":"FEMININO","cidade":"CAMPINAS","escola":"COLEGIO RDSSWISS"},{"nome":"PEDRO DIMAS PEDRO FERREIRA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO JOSE DOS CAMPOS","escola":"LEONOR PEREIRA NUNES GALVAO PROFA EMEFI"},{"nome":"SAID MIRANDA HAUACHE","funcao":"ATLETA","sexo":"MASCULINO","cidade":"DIADEMA","escola":"PIASO CENTRO EDUCACIONAL"},{"nome":"SAMUEL ROCHA LIMA REIS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SANTO ANDRE","escola":"PENTAGONO COLEGIO UNIDADE NOVO ORATORIO"},{"nome":"SOPHIA DOS SANTOS RESENDE","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO JOSE DOS CAMPOS","escola":"JOSE MARIOTTO FERREIRA MAJOR AVIADOR"},{"nome":"SUELLEN MASSAE SATO CHIBANA","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"SAO PAULO","escola":"---"},{"nome":"TOMÁZ SILVA CADIMA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"COLEGIO ABACO UNIDADE SUMARE"},{"nome":"VITOR HUGO DELGADO DE CARVALHO","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"OSASCO","escola":"---"}],"Atletismo Adaptado":[{"nome":"ANTÔNIA ROSA SILVA SANTOS","funcao":"ATLETA","sexo":"FEMININO","cidade":"DOBRADA","escola":"PALMA ISAURA PINOTTI RICCI PROFA E ED ESP APAE DE MATAO"},{"nome":"BRUNA JULIA RIBEIRO DO NASCIMENTO","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"SANTANA DE PARNAIBA","escola":"---"},{"nome":"HELENA DAS NEVES ROCHA","funcao":"ATLETA","sexo":"FEMININO","cidade":"ALVINLANDIA","escola":"JOSE BONIFACIO DO COUTO"},{"nome":"JOSE HENRIQUE DOS SANTOS FREITAS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"ITAPOLIS","escola":"APAE DE ITAPOLIS"},{"nome":"JOSE MARCOS DOS SANTOS","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"ALVINLANDIA","escola":"---"},{"nome":"JOSE OTAVIO GOMES DA SILVA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"BADY BASSITT","escola":"RENASCER CENTRO EDUCACIONAL"},{"nome":"MARIA EDUARDA FEITOSA DA SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SANTANA DE PARNAIBA","escola":"RICARDA DOS SANTOS BRANCO PROFA COLEGIO MUNICIPAL"},{"nome":"ROBERT MIGUEL DE OLIVEIRA PADARINO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"FERNAO","escola":"EDUARDO DE SOUZA PORTO CEL"},{"nome":"SERGIO ANTONIO CHRISTIANI JUNIOR","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"MATAO","escola":"---"}],"Vôlei de Praia":[{"nome":"CRISTIANO JUNIOR MARTINS DOS SANTOS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"BERNARDINO DE CAMPOS","escola":"MIGUEL PRIANTE CALDERARO DOUTOR"},{"nome":"ISABELA PEIXOTO FONSECA","funcao":"ATLETA","sexo":"FEMININO","cidade":"CERQUILHO","escola":"COLEGIO GRADUAL CERQUILHO"},{"nome":"LUIZ FERNANDO FURTADO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"BERNARDINO DE CAMPOS","escola":"MIGUEL PRIANTE CALDERARO DOUTOR"},{"nome":"REINALDO APARECIDO DE PAULA POZZA","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"BERNARDINO DE CAMPOS","escola":"---"},{"nome":"SOFIA PEIXOTO FONSECA","funcao":"ATLETA","sexo":"FEMININO","cidade":"CERQUILHO","escola":"COLEGIO GRADUAL CERQUILHO"},{"nome":"VINICIUS HOMEM DE MELLO","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"TIETE","escola":"---"}],"Xadrez":[{"nome":"JOÃO PAULO POLLO RANDES","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"ARARAQUARA","escola":"---"},{"nome":"JÚLIA MOTA TEIXEIRA","funcao":"ATLETA","sexo":"FEMININO","cidade":"JACAREI","escola":"JOSE SIMPLICIO PROF"},{"nome":"LEONARDO ADOLFO ARDUINI","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"FRANCA","escola":"---"},{"nome":"LETÍCIA SYLVESTRE LORENZETTI","funcao":"ATLETA","sexo":"FEMININO","cidade":"ARARAQUARA","escola":"COLEGIO RAIO DE SOL"},{"nome":"PEDRO YUKI YOSHIDA MASET","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"SANTA MARIA COLEGIO"},{"nome":"RIKELMY RAFAEL ARAUJO NUNES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"FRANCA","escola":"VICENTE MINICUCCI PROFESSOR"}]},"BLOCO 2":{"Ciclismo / Ciclismo Virtual":[{"nome":"AGATHA VITÓRIA ROSA SOUZA","funcao":"ATLETA","sexo":"FEMININO","cidade":"ESTIVA GERBI","escola":"EVALDO JOSE ZENARI EMEF"},{"nome":"CHRISTIAN RODRIGUES GONÇALVES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"ASSIS","escola":"LENY BARROS DA SILVA PROFA"},{"nome":"JOÃO FERNANDO DE MAIO","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"ASSIS","escola":"---"},{"nome":"VALDINEIA DA SILVA BRANDINO DOS SANTOS","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"MOGI GUACU","escola":"---"}],"Ginástica Artística":[{"nome":"ALYCIA CRISTINA DE SOUZA BARBOSA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO BERNARDO DO CAMPO","escola":"CASSIANO FARIA PROF EMEB"},{"nome":"ANDRÉ MASCARA ALTEMEYER","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"---"},{"nome":"CARLOS MIGUEL ALVES OLIVEIRA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"SINHA PANTOJA"},{"nome":"LARA NAOMI SALES SHIMABUKURO","funcao":"ATLETA","sexo":"FEMININO","cidade":"CAMPINAS","escola":"ASTHER COLEGIO"},{"nome":"LAURA LEMOS TELES DE SOUZA","funcao":"ATLETA","sexo":"FEMININO","cidade":"TABOAO DA SERRA","escola":"ADVENTISTA COLEGIO"},{"nome":"LAZARO RAYNEL LAMELAS RAMIREZ","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"AMERICANA","escola":"---"},{"nome":"MARCOS DA CONCEIÇÃO MONTEIRO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"CONGONHAS LICEU"},{"nome":"RAFAEL MALULI XIMENES RECHE","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"AUGUSTO DO AMARAL DEPUTADO"}],"Voleibol":[{"nome":"AMANDA NEPOMUCENO CHEBEL","funcao":"ATLETA","sexo":"FEMININO","cidade":"MOGI DAS CRUZES","escola":"COLÉGIO CAMPOS SALLES"},{"nome":"ANDRÉ CURSINO BARBI NETO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"ANNA CLARA QUINA FERREIRA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO CAMPOS SALLES"},{"nome":"BRENDA MELO DA SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"DIADEMA","escola":"COLÉGIO CAMPOS SALLES"},{"nome":"CAUAN BORDIM PADUAN","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"GABRIEL FREITAS MARQUES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"HELOISA DO NASCIMENTO AZEVEDO","funcao":"ATLETA","sexo":"FEMININO","cidade":"BARUERI","escola":"COLÉGIO CAMPOS SALLES"},{"nome":"ISADORA DE PAULA PEREIRA SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO CAMPOS SALLES"},{"nome":"JORDANA RIBEIRO E ROCHA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO CAMPOS SALLES"},{"nome":"JOSÉ CARLOS DE OLIVEIRA","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"PONGAI","escola":"---"},{"nome":"LARISSA DOS SANTOS BENETTI","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO CAMPOS SALLES"},{"nome":"LORENA PISTILA CAVALCANTI","funcao":"ATLETA","sexo":"FEMININO","cidade":"OSASCO","escola":"COLÉGIO CAMPOS SALLES"},{"nome":"LUIS FERNANDO ESCOBAR BUTTI","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"---"},{"nome":"LUIZ EDNEI DE CAMPOS JUNIOR","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"MARCO ANTONIO RAMALHO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"MATEUS RAFAEL PEREIRA BARBOSA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"MATHEUS GAGLIARDI SILVA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"MIGUEL MENDES COELHO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"PAULO LUCAS OLIVEIRA FERRAZ","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"PIETRA CARAUBA DOS SANTOS","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO VICENTE","escola":"COLÉGIO CAMPOS SALLES"},{"nome":"RAFAEL CAIUBY DE BORTOLI","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PONGAI","escola":"ELZIRA GARBINO PAGANI PROFA"},{"nome":"THAISA HELENA PEREIRA PAES","funcao":"ATLETA","sexo":"FEMININO","cidade":"BARUERI","escola":"COLÉGIO CAMPOS SALLES"}],"Natação":[{"nome":"ANA BEATRIZ GROTHE ESMANHOTO","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO VISCONDE DE PORTO SEGURO CAMPUS MORUMBI"},{"nome":"ANDRÉ SODRÉ DE SOUSA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"SANTA CRUZ COLEGIO"},{"nome":"ARTHUR ALBERTINI CORANDIM","funcao":"ATLETA","sexo":"MASCULINO","cidade":"AMERICANA","escola":"AMERICANA INSTITUTO EDUCACIONAL DE"},{"nome":"BRENDHA BEATRIZ DA SILVA COSTA OLIVEIRA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO AMORIM"},{"nome":"BRENO DE LIMA","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"LIMEIRA","escola":"---"},{"nome":"CAMILLE SILVA DE PAULA","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"SAO PAULO","escola":"---"},{"nome":"CAROLINA MARAGNI NASCIMENTO","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"ASSOCIAÇÃO PELA FAMÍLIA"},{"nome":"FELIPE CASARIM DE ARAÚJO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"MOGI GUACU","escola":"EMEF PRFEITO WALDOMIRO CALMAZINI"},{"nome":"GUILHERME SERRANO BARBUIO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"BAURU","escola":"REMBRANDT COC"},{"nome":"ISABELLA MORAES DE MENDONÇA","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"SAO PAULO","escola":"---"},{"nome":"LARISSA SOARES GALDINO","funcao":"ATLETA","sexo":"FEMININO","cidade":"LIMEIRA","escola":"LIMEIRENSE COLEGIO"},{"nome":"LETICIA ZANON NOLASCO","funcao":"ATLETA","sexo":"FEMININO","cidade":"SANTO ANDRE","escola":"COLEGIO ARBOS"},{"nome":"MIGUEL VIEIRA LAVOURA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"LIMEIRA","escola":"PORTAL DE LIMEIRA COLEGIO"},{"nome":"PAOLA DEGANUTTI OLIVEIRA","funcao":"ATLETA","sexo":"FEMININO","cidade":"BAURU","escola":"IVAN ENGLER DE ALMEIDA EMEF"},{"nome":"PEDRO FACINA LOPES DA ROCHA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"AMERICANA","escola":"ANGLO CEZANNE COLEGIO"},{"nome":"PIETRA ALVES SABÓIA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"GUILHERME DUMONT VILLARES COLEGIO"},{"nome":"RENAN LOPES","funcao":"ATLETA","sexo":"MASCULINO","cidade":"CATANDUVA","escola":"COLEGIO CATANDUVA"},{"nome":"ROGÉRIO RYU STALBERG SHIRAI","funcao":"ATLETA","sexo":"MASCULINO","cidade":"ANDRADINA","escola":"CENTRO DE EDUCAÇÃO E CULTURA DE ANDRADINA LTDA"},{"nome":"SOPHIA MARQUES LOPES","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO MATER DEI"}],"Handebol":[{"nome":"BEATRIZ LUQUES DE OLIVEIRA COSTA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"BERNARDO JOÃO CABRELON COPPINI","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"BERNARDO ORTIZ GOIS BENTO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"DAVI ARAUJO LISBOA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"ENZO BARROS MENDONÇA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"ENZO FERREIRA ROSA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"ENZO GASPAROTTO QUARESMA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"FELIPPO JOAQUIM CABRELON COPPINI","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"GIULIA LOURENÇO ALVES","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"GUSTAVO EDUARDO RODRIGUES DA SILVA","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"---"},{"nome":"JAQUELINE DE NAZARE RIBEIRO SILVA","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"SAO BERNARDO DO CAMPO","escola":"---"},{"nome":"JOÃO LUCAS DE SOUSA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"JULIA GUERRA KARAM","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"KAMILLY NERE DOS REIS","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"KETLIN SANTOS SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"LÍVIA CARDOSO LIMÃO","funcao":"ATLETA","sexo":"FEMININO","cidade":"GUARULHOS","escola":"COLÉGIO AMORIM LTDA"},{"nome":"LUIZA CAMPOS MANCIN","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"MAISA MATOS DA SILVA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"MANUELLY OLIVEIRA DIAS","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"MARIA CLARA MATOS DE OLIVEIRA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"MARIA LUIZA PALERMO SONEHARA DE BARROS","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"MILENA SILVA BORGES","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLÉGIO AMORIM LTDA"},{"nome":"MURILO DE LEONARDIS OLIVEIRA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"MURILO FISCHER DOS SANTOS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"VINICIUS DIAS TOGNOLLI","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"},{"nome":"VITOR LEONI JACOB","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"ABACO COLEGIO II - SÃO BERNARDO DO CAMPO"}],"Tênis de Mesa":[{"nome":"BEATRIZ TAKATSU CHOI","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"COLEGIO ARBOS - UNIDADE SAO CAETANO DO SUL"},{"nome":"FERNANDO DURAN DE OLIVEIRA","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SANTO ANDRE","escola":"---"},{"nome":"HENRY SHIGUIO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO CAETANO DO SUL","escola":"EDUCANDARIO SANTO ANTONIO ESCOLA DE ENSINO FUNDAMENTAL MEDIO"},{"nome":"LAURA YUMI SASAKI","funcao":"ATLETA","sexo":"FEMININO","cidade":"SANTO ANDRE","escola":"COLEGIO ARBOS - UNIDADE SAO CAETANO DO SUL"},{"nome":"THEO RYUTA YAMADA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO PAULO","escola":"EDUCANDARIO SANTO ANTONIO ESCOLA DE ENSINO FUNDAMENTAL MEDIO"},{"nome":"WALTER FRANCO DA ROCHA","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"---"}],"Wrestling":[{"nome":"BRYAN OLIVEIRA DE SOUZA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"OSASCO","escola":"ESCOLA SESI OSASCO"},{"nome":"DAVI PEREIRA DOS SANTOS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"CUBATAO","escola":"LINCOLN FELICIANO"},{"nome":"DONNIE SAMUEL CUNHA OLIVEIRA MORAIS DE SOUZA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PERUIBE","escola":"COLEGIO MONTEIRO LOBATO"},{"nome":"EMANUELLE ALVES DE SOUZA","funcao":"ATLETA","sexo":"FEMININO","cidade":"CUBATAO","escola":"SESI CENTRO EDUCACIONAL DE CUBATAO"},{"nome":"HEITOR NASCIMENTO FELICIANO DOS SANTOS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"CUBATAO","escola":"LINCOLN FELICIANO"},{"nome":"ISABELA BIZZINI CONSIGLIO CORRÊA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO JOSE DOS CAMPOS","escola":"NORMA DE CONTI SIMAO PROFA EMEFI"},{"nome":"ISADORA DA SILVA RODRIGUES BRITO","funcao":"ATLETA","sexo":"FEMININO","cidade":"OSASCO","escola":"COLEGIO RIBEIRO DE FREITAS"},{"nome":"KELLY KATHERINE LARES ESTABA","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"JULIA MACEDO PANTOJA PROFESSORA"},{"nome":"MARCOS PEREIRA DE OLIVEIRA JUNIOR","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"PRAIA GRANDE","escola":"---"},{"nome":"RAFAELA DA LUZ SANTOS","funcao":"TÉCNICO(A)","sexo":"FEMININO","cidade":"SAO PAULO","escola":"---"},{"nome":"SAMUEL DOS SANTOS LIMA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"CUBATAO","escola":"MANOEL DA NOBREGA PADRE UNIDADE MUNICIPAL DE ENSINO"},{"nome":"VICTORIA MARIA TAVARES FERNANDES","funcao":"ATLETA","sexo":"FEMININO","cidade":"RIBEIRAO PIRES","escola":"FRANCISCO PRISCO"},{"nome":"WHENZO PEREIRA DE OLIVEIRA","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PRAIA GRANDE","escola":"ANTONIO PERES FERREIRA ESCOLA MUNICIPAL"},{"nome":"YASMIN APOLONIO VAZ","funcao":"ATLETA","sexo":"FEMININO","cidade":"CUBATAO","escola":"SESI CENTRO EDUCACIONAL DE CUBATAO"}],"Badminton":[{"nome":"FILIPE KERR DIAS DE TOLEDO","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"MOGI DAS CRUZES","escola":"---"},{"nome":"HERBERT FERNANDO FUSITA","funcao":"TÉCNICO(A)","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"---"},{"nome":"JULIA MIWA TAMAYOSE","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO CAETANO DO SUL","escola":"EXTERNATO SANTO ANTONIO"},{"nome":"MARINA NASCIMENTO NERE NEVES","funcao":"ATLETA","sexo":"FEMININO","cidade":"SAO PAULO","escola":"WALDORF FRANCISCO DE ASSIS ESCOLA"},{"nome":"NOAH YOSSEF NEVES DE ANGELO","funcao":"ATLETA","sexo":"MASCULINO","cidade":"SAO BERNARDO DO CAMPO","escola":"RIBEIRO MAIA COLEGIO"},{"nome":"SAMUEL PEREIRA REIS","funcao":"ATLETA","sexo":"MASCULINO","cidade":"PRESIDENTE PRUDENTE","escola":"ESCOLA SESI DARCY ZACHARIAS"}]}};
-function csvCell(v){const s=String(v??"").replace(/\r?\n/g," ");return `"${s.replace(/"/g,'""')}"`;}
-function buildReportCSV(){const rows=[["Transporte","Categoria","Data","Planilha","Linha","Representante","Responsável","Passageiros","Status","Check-ins","Total de paradas","Horários de embarque","Chegada","Destino"]];for(const t of state.transports){const h=hist(t),stops=(t.stops||[]).filter(x=>x.kind!=="chegada"),a=(t.stops||[]).find(x=>x.kind==="chegada");rows.push([t.number,t.category,t.date,t.sheet,t.row,t.representative,t.contact,t.passengers,statusText(t),(h.stops||[]).length,stops.length,stops.map(x=>excelTimeToString(x.time)).filter(Boolean).join(" | "),excelTimeToString(a?.time||""),a?.destination||""]);}return rows.map(r=>r.map(csvCell).join(";")).join("\r\n");}
-function downloadReport(){const blob=new Blob(["\uFEFF"+buildReportCSV()],{type:"text/csv;charset=utf-8;"}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=`JEBs_2026_Relatorio_${new Date().toISOString().slice(0,10)}.csv`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function render(){
  renderStats();
  const c=$("content");
@@ -481,7 +464,20 @@ function render(){
    c.querySelectorAll('[data-mod]').forEach(b=>b.onclick=()=>{const x=block.items[Number(b.dataset.mod)];c.innerHTML=`<div class="pageTop"><button class="backBtn" id="backMods">‹ Modalidades</button><div><div class="eyebrow">${block.name}</div><h2>${esc(x[0])}</h2></div></div><div class="scheduleCardsV18"><div class="scheduleHeroV18"><div class="scheduleIconV18">📅</div><div><small>PROGRAMAÇÃO DA MODALIDADE</small><h3>${esc(x[0])}</h3></div></div><div class="scheduleStepsV18"><div><span>CHEGADA</span><b>${esc(x[1])}</b></div><div><span>COMPETIÇÃO</span><b>${esc(x[2])}</b></div><div><span>SAÍDA</span><b>${esc(x[3])}</b></div></div></div>`;$("backMods").onclick=()=>render()});
    return;
  }
- if(state.view==="relatorios"){
+ function csvCell(v){const s=String(v??"");return '"'+s.replace(/"/g,'""')+'"'}
+function buildReportCSV(){
+ const rows=[['Transporte','Data','Categoria','Representante','Passageiros','Status','Paradas confirmadas','Total de paradas','Chegada']];
+ for(const t of state.transports){
+   const h=hist(t), stops=(t.stops||[]).filter(x=>x.kind!=="chegada"), arrival=(t.stops||[]).find(x=>x.kind==="chegada");
+   rows.push([t.number,t.date,t.category,t.representative,t.passengers,statusText(t),h.stops?.length||0,stops.length,arrival?.time||'']);
+ }
+ return '\\uFEFF'+rows.map(r=>r.map(csvCell).join(';')).join('\\r\\n');
+}
+function downloadReport(){
+ const blob=new Blob([buildReportCSV()],{type:'text/csv;charset=utf-8;'});
+ const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='JEBs_2026_Relatorio.csv';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+if(state.view==="relatorios"){
    const ts=state.transports,p=ts.filter(t=>status(t)==="pending"),pr=ts.filter(t=>status(t)==="progress"),d=ts.filter(t=>status(t)==="done");
    if(state.reportFilter){
      const map={pending:[p,'Pendentes','rp1'],progress:[pr,'Em andamento','rp2'],done:[d,'Concluídos','rp3']}; const [arr,label,cls]=map[state.reportFilter];
@@ -489,8 +485,10 @@ function render(){
      $("backReports").onclick=()=>{state.reportFilter=null;render()}; c.querySelectorAll('.transportCard').forEach(el=>el.onclick=()=>openTransport(decodeURIComponent(el.dataset.id))); return;
    }
    const rl=(arr,label,cls)=>`<button class="reportBig ${cls}" data-report="${cls}"><b>${arr.length}</b><span>${label}</span><i>›</i></button>`;
-   c.innerHTML=`<div class="pageTop"><button class="backBtn" id="backHome">‹ Início</button><div><div class="eyebrow">ACOMPANHAMENTO</div><h2>Relatórios</h2></div></div><button class="reportDownloadBtn" id="downloadReport" type="button">⇩ &nbsp; Baixar informações para Excel</button><div class="reportHero"><div><small>TRANSPORTES</small><b>${ts.length}</b><span>cadastrados</span></div><div><small>CONCLUÍDOS</small><b>${d.length}</b><span>finalizados</span></div></div><div class="reportGrid">${rl(p,'Pendentes','rp1')}${rl(pr,'Em andamento','rp2')}${rl(d,'Concluídos','rp3')}</div>`;
-   $("backHome").onclick=()=>{state.view="home";state.reportFilter=null;render()}; $("downloadReport").onclick=downloadReport; c.querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>{state.reportFilter=b.dataset.report==='rp1'?'pending':b.dataset.report==='rp2'?'progress':'done';render()}); return;
+   c.innerHTML=`<div class="pageTop"><button class="backBtn" id="backHome">‹ Início</button><div><div class="eyebrow">ACOMPANHAMENTO</div><h2>Relatórios</h2></div></div><div class="reportHero"><div><small>TRANSPORTES</small><b>${ts.length}</b><span>cadastrados</span></div><div><small>CONCLUÍDOS</small><b>${d.length}</b><span>finalizados</span></div></div><button class="downloadReportBtn" id="downloadReport" type="button">⬇ Baixar informações</button><div class="reportGrid">${rl(p,'Pendentes','rp1')}${rl(pr,'Em andamento','rp2')}${rl(d,'Concluídos','rp3')}</div>`;
+   $("backHome").onclick=()=>{state.view="home";state.reportFilter=null;render()};
+   $("downloadReport").onclick=downloadReport;
+   c.querySelectorAll('[data-report]').forEach(b=>b.onclick=()=>{state.reportFilter=b.dataset.report==='rp1'?'pending':b.dataset.report==='rp2'?'progress':'done';render()}); return;
  }
  if(state.view==="convocacoes"){
    const b1=['Atletismo','Atletismo Adaptado','Basquete','Futsal','Ginástica Rítmica','Judô','Karatê','Taekwondo','Vôlei de Praia','Xadrez'];
@@ -506,7 +504,7 @@ function render(){
  c.innerHTML=`<div class="pageTop convDetailTop"><div class="convDetailNav"><button class="backBtn" id="backConv">‹ Convocações</button><button class="backBtn homeDirectBtn" id="homeFromConv">⌂ Início</button></div><div><div class="eyebrow">${esc(state.convBlock)}</div><h2>${esc(x)}</h2></div></div><div class="convSummaryV18"><b>${list.length}</b><span>convocados</span><div class="convCounts"><span class="ok">✓ ${counts.confirmed}</span><span class="wait">● ${counts.pending}</span><span class="no">✕ ${counts.absent}</span></div></div><div class="convStatusLegend"><span class="l1">✓ Confirmado</span><span class="l2">● Pendente</span><span class="l3">✕ Ausente</span></div><div class="peopleGridV18">${list.length?list.map((p,i)=>{const st=getStatus(p.nome);return `<article class="personCardV18"><div class="personNum">${String(i+1).padStart(2,'0')}</div><div class="convPersonWrap"><div class="convPersonMain"><strong>${esc(p.nome)}</strong><span>${esc(p.funcao||'Função não informada')}</span><small>${esc(p.cidade||'')}${p.escola&&p.escola!=='---'?` • ${esc(p.escola)}`:''}</small></div><div class="convPersonActions"><button class="convStatusBtn confirmed ${st==='confirmed'?'active':''}" data-cs="confirmed" data-person="${encodeURIComponent(p.nome)}" type="button">✓</button><button class="convStatusBtn pending ${st==='pending'?'active':''}" data-cs="pending" data-person="${encodeURIComponent(p.nome)}" type="button">●</button><button class="convStatusBtn absent ${st==='absent'?'active':''}" data-cs="absent" data-person="${encodeURIComponent(p.nome)}" type="button">✕</button></div></div></article>`}).join(''):'<div class="empty">Nenhum convocado encontrado para esta modalidade nos dados fornecidos.</div>'}</div>`;
  $('backConv').onclick=()=>{state.convModal=null;render()};
  $('homeFromConv').onclick=()=>{state.view="home";state.convModal=null;render()};
- c.querySelectorAll('[data-cs]').forEach(btn=>btn.onclick=()=>{state.convStatuses=state.convStatuses||{};state.convStatuses[`${state.convBlock}|${x}|${decodeURIComponent(btn.dataset.person)}`]=btn.dataset.cs;persistConvStatuses();render()});
+ c.querySelectorAll('[data-cs]').forEach(btn=>btn.onclick=()=>{state.convStatuses=state.convStatuses||{};state.convStatuses[`${state.convBlock}|${x}|${decodeURIComponent(btn.dataset.person)}`]=btn.dataset.cs;localStorage.setItem('jebsNexusConvStatuses',JSON.stringify(state.convStatuses));render()});
  return;
 }
    c.innerHTML=`<div class="pageTop"><button class="backBtn" id="backHome">‹ Início</button><div><div class="eyebrow">JEBs 2026</div><h2>Convocações</h2></div></div><div class="pageNote">Modalidades organizadas pelos dois blocos. Toque em uma modalidade para visualizar a convocação.</div><section class="convBlock"><div class="blockTitle">BLOCO 1</div><div class="convGrid">${renderGroup(b1,'c1')}</div></section><section class="convBlock"><div class="blockTitle">BLOCO 2</div><div class="convGrid">${renderGroup(b2,'c2')}</div></section>`;
@@ -565,16 +563,34 @@ function enterCategory(cat){state.category=cat;state.view="dates";state.date=nul
 function enterDate(d){state.date=decodeURIComponent(d);state.view="transports";state.filter="all";render()}
 function goCategories(){state.view="categories";render()}function goDates(){state.view="dates";render()}
 function toggleStop(i){
- const t=state.current;if(!t)return;const h=hist(t);h.stops=h.stops||[];const p=h.stops.indexOf(i);if(p>=0)h.stops.splice(p,1);else h.stops.push(i);if(h.stops.length)h.steps[0]=true;persist();render();openTransport(t.id);
+ const t=state.current;if(!t)return;
+ const h=hist(t);h.stops=h.stops||[];
+ const p=h.stops.indexOf(i);
+ if(p>=0)h.stops.splice(p,1);else h.stops.push(i);
+ if(h.stops.length)h.steps[0]=true;
+ persist();render();openTransport(t.id);
 }
 function toggleStep(i){
- const t=state.current;if(!t)return;const h=hist(t);h.steps=h.steps||[false,false,false];h.steps[i]=!h.steps[i];if(i===0&&!h.steps[0])h.steps[1]=false;if(i===1&&!h.steps[1])h.steps[2]=false;h.done=!!(h.steps[0]&&h.steps[1]&&h.steps[2]);persist();render();openTransport(t.id);
+ const t=state.current;if(!t)return;
+ const h=hist(t);h.steps=h.steps||[false,false,false];
+ h.steps[i]=!h.steps[i];
+ if(i===0 && !h.steps[0]) h.steps[1]=false;
+ if(i===1 && !h.steps[1]) h.steps[2]=false;
+ h.done=h.steps[0]&&h.steps[1]&&h.steps[2];
+ persist();render();openTransport(t.id);
 }
 function completeTransport(){
- const t=state.current;if(!t)return;const h=hist(t);h.steps=[true,true,true];h.done=true;h.stops=(t.stops||[]).map((x,i)=>x.kind!=="chegada"?i:null).filter(x=>x!==null);persist();closeModal();render();
+ const t=state.current;if(!t)return;
+ const h=hist(t);
+ h.steps=[true,true,true];h.done=true;
+ h.stops=(t.stops||[]).map((x,i)=>x.kind!=="chegada"?i:null).filter(x=>x!==null);
+ persist();closeModal();render();
 }
 function reopenTransport(){
- const t=state.current;if(!t)return;const h=hist(t);h.steps=[false,false,false];h.done=false;h.stops=[];persist();closeModal();render();
+ const t=state.current;if(!t)return;
+ const h=hist(t);
+ h.steps=[false,false,false];h.done=false;h.stops=[];
+ persist();closeModal();render();
 }
 function closeModal(){
  if($("search")){ $("search").value=""; updateSearchClear(); }
@@ -612,7 +628,7 @@ function openTransport(id){
    ${stepNames.map((s,i)=>`<button type="button" class="step ${h.steps?.[i]?"done":""}" data-step="${i}">
       <span class="stepIcon">${h.steps?.[i]?"✓":""}</span><b>${s}</b>
    </button>`).join("")}
-   ${h.done?`<button type="button" class="primary" data-action="reopen">↩ Reabrir transporte</button>`:`<button type="button" class="primary" data-action="complete">✓ Concluir transporte</button>`}
+   <button type="button" class="primary" data-action="complete">✓ Concluir transporte</button>
    <button type="button" class="homeActionV18" data-action="home">⌂ &nbsp; INÍCIO</button><button type="button" class="bottomClose" data-action="close">Fechar e voltar</button>
  </div>`;
  $("modal").classList.add("open"); document.body.classList.add("modalLocked");
@@ -708,12 +724,22 @@ async function xlsxToRows(buf){
  }
  return sheets;
 }
-function excelTimeToString(value){
- const raw=String(value??"").trim();if(!raw)return "";
- if(/^\d{1,2}:\d{2}(?::\d{2})?$/.test(raw)){const p=raw.split(":");return `${String(Math.min(23,Number(p[0])||0)).padStart(2,"0")}:${String(Math.min(59,Number(p[1])||0)).padStart(2,"0")}:${String(Math.min(59,Number(p[2]||0)||0)).padStart(2,"0")}`;}
- const n=Number(raw.replace(",","."));if(Number.isFinite(n)&&n>=0&&n<1){const total=Math.round(n*86400),hh=Math.floor(total/3600)%24,mm=Math.floor((total%3600)/60),ss=total%60;return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")}`;}return raw;
+function excelTimeToString(v){
+ const raw=String(v??"").trim();
+ if(!raw)return "";
+ const normalized=raw.replace(",",".");
+ const n=Number(normalized);
+ if(Number.isFinite(n) && n>=0 && n<1){
+   const total=Math.round(n*24*60*60)%86400;
+   const hh=Math.floor(total/3600),mm=Math.floor((total%3600)/60),ss=total%60;
+   return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")}`;
+ }
+ if(/^\d{1,2}:\d{1,2}(:\d{1,2})?$/.test(raw)){
+   const [h,m,sec="0"]=raw.split(":");
+   return `${String(Number(h)).padStart(2,"0")}:${String(Number(m)).padStart(2,"0")}:${String(Number(sec)).padStart(2,"0")}`;
+ }
+ return raw;
 }
-function excelValue(v){const s=String(v??"").trim();return (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(s)||(/^\d+(?:[\.,]\d+)?$/.test(s)&&Number(s.replace(",","."))<1))?excelTimeToString(s):s;}
 function parseTransportRows(sheets){
  const out=[];
  for(const sh of sheets){
@@ -726,7 +752,7 @@ function parseTransportRows(sheets){
      if(tm){
        finish();
        const num=tm[1]?Number(tm[1]):null, dd=ret?sheetDate:(tm[2]||sheetDate), mm=ret?"09":(tm[3]||"09");
-       sourceKey=`${ret?"retorno":"embarque"}|${normKeyPart(sh.name)}|ROW|${i+1}`; current={id:sourceKey,sourceKey,sheet:sh.name,number:num??"—",row:i+1,date:dd?String(dd).padStart(2,"0")+"/"+String(mm).padStart(2,"0"):"Data não informada",category:ret?"retorno":"embarque",contact:"",representative:"",distance:"",passengers:0,stops:[]};
+       current={id:`${ret?"retorno":"embarque"}|${normKeyPart(sh.name)}|ROW|${i+1}`,sourceKey:`${ret?"retorno":"embarque"}|${normKeyPart(sh.name)}|ROW|${i+1}`,sheet:sh.name,number:num??"—",row:i+1,date:dd?String(dd).padStart(2,"0")+"/"+String(mm).padStart(2,"0"):"Data não informada",category:ret?"retorno":"embarque",contact:"",representative:"",distance:"",passengers:0,stops:[]};
        const head=sh.rows[i+1]||[];
        const h8=String(head[7]??"").trim();
        if(h8 && isNaN(Number(h8)) && !/^(TAMANHO|UNIFORMES?)$/i.test(h8))current.contact=h8;
@@ -741,7 +767,7 @@ function parseTransportRows(sheets){
        continue;
      }
      if(/^CHEGADA$/i.test(row[0]||"")){
-       current.stops.push({kind:"chegada",municipio:"CHEGADA",time:excelValue(row[1]||""),destination:row[3]||row[6]||"",qty:Number(row[5])||0});
+       current.stops.push({kind:"chegada",municipio:"CHEGADA",time:excelTimeToString(row[1]||""),destination:row[3]||row[6]||"",qty:Number(row[5])||0});
        continue;
      }
      // Stop row: municipality, school/address/contact/qty/destination.
@@ -749,7 +775,7 @@ function parseTransportRows(sheets){
      const qty=Number(row[5]);
      if(hasStop && (row[0]||row[6]||row[2]) && !Number.isNaN(qty)){
        const municipio=String(row[0]||row[6]||"").trim();
-       current.stops.push({kind:"embarque",municipio:municipio||String(row[6]||"").trim(),time:excelValue(row[1]||""),school:row[2]||"",address:row[3]||"",contact:row[4]||"",qty:qty||0,destination:row[6]||""});
+       current.stops.push({kind:"embarque",municipio:municipio||String(row[6]||"").trim(),time:excelTimeToString(row[1]||""),school:row[2]||"",address:row[3]||"",contact:row[4]||"",qty:qty||0,destination:row[6]||""});
      }
    }
    finish();
@@ -758,20 +784,39 @@ function parseTransportRows(sheets){
 }
 async function importWorkbook(file){
  try{
-  const buf=await file.arrayBuffer();let imported=[];
-  if(/\.csv$/i.test(file.name)){const text=new TextDecoder("utf-8").decode(buf),lines=text.split(/\r?\n/),rows=lines.map(x=>x.split(";"));imported=parseTransportRows([{name:"IMPORTADO",rows}]);}
-  else{const sheets=await xlsxToRows(buf);imported=parseTransportRows(sheets);}
-  if(!imported.length)throw new Error("Não encontrei nenhum bloco 'TRANSPORTE' nessa planilha.");
-  const incoming=new Map();
-  for(const t of imported){const key=t.sourceKey||stableKey(t);t.id=key;t.sourceKey=key;incoming.set(key,t);}
-  // Preserve check-ins for rows that already existed, then make the spreadsheet authoritative.
-  for(const t of incoming.values()){
-   if(state.history[t.id])continue;
-   const old=state.transports.find(x=>String(x.sourceKey||"")===String(t.sourceKey||"")||(x.sheet===t.sheet&&Number(x.row)===Number(t.row)&&x.category===t.category));
-   if(old&&state.history[old.id])state.history[t.id]=state.history[old.id];
-  }
-  state.transports=[...incoming.values()];normalizeLocalState();localRevision++;localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));state.view="categories";state.date=null;state.filter="all";render();
-  const ok=await serverSync({replaceTransports:true});if(!ok)throw new Error("Não foi possível gravar a planilha no servidor.");render();alert(`Planilha importada com sucesso: ${state.transports.length} transporte(s). O histórico de check-ins foi preservado.`);
+   const buf=await file.arrayBuffer();
+   let imported=[];
+   if(/\.csv$/i.test(file.name)){
+     const text=new TextDecoder("utf-8").decode(buf),lines=text.split(/\r?\n/),rows=lines.map(x=>x.split(";"));
+     imported=parseTransportRows([{name:"IMPORTADO",rows}]);
+   }else{
+     const sheets=await xlsxToRows(buf);
+     imported=parseTransportRows(sheets);
+   }
+   if(!imported.length)throw new Error("Não encontrei nenhum bloco 'TRANSPORTE' nessa planilha.");
+   const old=state.transports.slice();
+   const oldByKey=new Map(old.map(t=>[stableKey(t),t]));
+   const oldByIdentity=new Map(old.map(t=>[`${t.category||"embarque"}|${t.number??""}|${t.date||""}`,t]));
+   const next=[];
+   for(const t of imported){
+     const key=stableKey(t); const identity=`${t.category||"embarque"}|${t.number??""}|${t.date||""}`;
+     const prev=oldByKey.get(key)||oldByIdentity.get(identity);
+     t.id=key;
+     if(prev){
+       const ph=state.history[prev.id]||state.history[stableKey(prev)];
+       if(ph) state.history[key]=ph;
+     }
+     next.push(t);
+   }
+   // The spreadsheet is authoritative: importing the same file twice does not append anything.
+   state.transports=next;
+   migrateHistory();
+   localRevision++;
+   localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
+   state.view="categories";state.date=null;state.filter="all";render();
+   const ok=await serverSync({replaceTransports:true});
+   if(!ok)throw new Error("Não foi possível gravar a planilha no servidor.");
+   alert(`Planilha importada com sucesso: ${state.transports.length} transporte(s). O histórico de check-ins foi preservado.`);
  }catch(err){console.error(err);alert("Erro ao importar a planilha: "+(err?.message||err));}
 }
 
