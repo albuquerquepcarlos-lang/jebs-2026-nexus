@@ -355,7 +355,6 @@ let syncBusy=false, syncPending=false, syncTimer=null, localRevision=0;
 async function serverSync(options={}){
   if(syncBusy){syncPending=true;return false;}
   syncBusy=true;
-  const sentRevision=localRevision;
   try{
     const payload={transports:state.transports,history:state.history,convStatuses:state.convStatuses||{}};
     if(options.replaceTransports) payload.replaceTransports=true;
@@ -370,6 +369,16 @@ async function serverSync(options={}){
     if(syncPending){syncPending=false;setTimeout(()=>serverSync(),0)}
   }
 }
+async function saveHistoryDirect(id,value){
+  try{
+    const res=await fetch('/api/history',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:String(id),data:value}),cache:'no-store'});
+    if(!res.ok) throw new Error('Servidor de dados indisponível');
+    const out=await res.json();
+    if(!out?.ok) throw new Error(out?.error||'Não foi possível salvar o histórico');
+    return true;
+  }catch(e){console.warn('Nexus history save:',e);return false}
+}
+
 function queueServerSync(){clearTimeout(syncTimer);syncTimer=setTimeout(()=>serverSync(),250)}
 async function hydrateFromServer(){
   const revisionAtStart=localRevision;
@@ -667,15 +676,10 @@ async function completeTransport(){
  const h=hist(t);
  h.steps=[true,true,true];h.done=true;
  h.stops=(t.stops||[]).map((x,i)=>x.kind!=="chegada"?i:null).filter(x=>x!==null);
- // Conclusão é uma ação crítica: grava no servidor imediatamente antes de fechar.
- // Assim, uma atualização de página não consegue voltar ao estado anterior.
  localRevision++;
  localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
- const ok=await serverSync({forceHistoryIds:[t.id]});
- if(!ok){
-   // Mantém o estado local e deixa a sincronização em fila para uma nova tentativa.
-   queueServerSync();
- }
+ const ok=await saveHistoryDirect(t.id,h);
+ if(!ok){alert("Não foi possível salvar a conclusão no servidor. Tente novamente.");return;}
  closeModal();render();
 }
 function reopenTransport(){
@@ -684,8 +688,10 @@ function reopenTransport(){
  h.steps=[false,false,false];h.done=false;h.stops=[];
  localRevision++;
  localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
- closeModal();render();
- serverSync({forceHistoryIds:[t.id]});
+ saveHistoryDirect(t.id,h).then(ok=>{
+   if(!ok){alert("Não foi possível salvar a reabertura no servidor. Tente novamente.");return;}
+   closeModal();render();
+ });
 }
 function closeModal(){
  if($("search")){ $("search").value=""; updateSearchClear(); }

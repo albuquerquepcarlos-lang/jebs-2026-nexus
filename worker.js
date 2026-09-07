@@ -124,6 +124,19 @@ export default {
       if (url.pathname === '/api/state' && request.method === 'GET') {
         return json(await readState(env));
       }
+      if (url.pathname === '/api/history' && request.method === 'POST') {
+        const payload = await request.json();
+        const id = String(payload?.id || '');
+        if (!id) return json({ ok:false, error:'id obrigatório' }, 400);
+        const value = payload?.data;
+        if (!value || typeof value !== 'object') return json({ ok:false, error:'data inválido' }, 400);
+        await env.DB.prepare(
+          `INSERT INTO transport_history (id, data, updated_at)
+           VALUES (?, ?, datetime('now'))
+           ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at`
+        ).bind(id, JSON.stringify(value)).run();
+        return json({ ok:true, id, data:value });
+      }
       if (url.pathname === '/api/state' && request.method === 'POST') {
         const payload = await request.json();
         return json(await writeState(env, payload));
