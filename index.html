@@ -418,7 +418,20 @@ function persist(){
  localRevision++;
  localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
  localStorage.setItem("jebsNexusConvStatuses",JSON.stringify(state.convStatuses||{}));
- queueServerSync();
+}
+async function persistHistoryAction(id,value){
+  localRevision++;
+  localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
+  const ok=await saveHistoryDirect(id,value);
+  if(!ok){ await hydrateFromServer(); alert("Não foi possível salvar esta baixa no servidor. A operação foi revertida para o último estado salvo."); return false; }
+  return true;
+}
+async function saveConvStatusDirect(personKey,statusValue){
+  try{
+    const res=await fetch(API_BASE+'/api/conv-status',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({personKey:String(personKey),status:String(statusValue)}),cache:'no-store'});
+    if(!res.ok) throw new Error('Servidor de dados indisponível');
+    return true;
+  }catch(e){console.warn('Nexus conv status save:',e);return false;}
 }
 function formatExcelTime(v){
  const s=String(v??"").trim(); if(!s)return "";
@@ -608,7 +621,7 @@ if(state.view==="relatorios"){
  c.innerHTML=`<div class="pageTop convDetailTop"><div class="convDetailNav"><button class="backBtn" id="backConv">‹ Convocações</button><button class="backBtn homeDirectBtn" id="homeFromConv">⌂ Início</button></div><div><div class="eyebrow">${esc(state.convBlock)}</div><h2>${esc(x)}</h2></div></div><div class="convSummaryV18"><b>${list.length}</b><span>convocados</span><div class="convCounts"><span class="ok">✓ ${counts.confirmed}</span><span class="wait">● ${counts.pending}</span><span class="no">✕ ${counts.absent}</span></div></div><div class="convStatusLegend"><span class="l1">✓ Confirmado</span><span class="l2">● Pendente</span><span class="l3">✕ Ausente</span></div><div class="peopleGridV18">${list.length?list.map((p,i)=>{const st=getStatus(p.nome);return `<article class="personCardV18"><div class="personNum">${String(i+1).padStart(2,'0')}</div><div class="convPersonWrap"><div class="convPersonMain"><strong>${esc(p.nome)}</strong><span>${esc(p.funcao||'Função não informada')}</span><small>${esc(p.cidade||'')}${p.escola&&p.escola!=='---'?` • ${esc(p.escola)}`:''}</small></div><div class="convPersonActions"><button class="convStatusBtn confirmed ${st==='confirmed'?'active':''}" data-cs="confirmed" data-person="${encodeURIComponent(p.nome)}" type="button">✓</button><button class="convStatusBtn pending ${st==='pending'?'active':''}" data-cs="pending" data-person="${encodeURIComponent(p.nome)}" type="button">●</button><button class="convStatusBtn absent ${st==='absent'?'active':''}" data-cs="absent" data-person="${encodeURIComponent(p.nome)}" type="button">✕</button></div></div></article>`}).join(''):'<div class="empty">Nenhum convocado encontrado para esta modalidade nos dados fornecidos.</div>'}</div>`;
  $('backConv').onclick=()=>{state.convModal=null;render()};
  $('homeFromConv').onclick=()=>{state.view="home";state.convModal=null;render()};
- c.querySelectorAll('[data-cs]').forEach(btn=>btn.onclick=()=>{state.convStatuses=state.convStatuses||{};state.convStatuses[`${state.convBlock}|${x}|${decodeURIComponent(btn.dataset.person)}`]=btn.dataset.cs;localStorage.setItem('jebsNexusConvStatuses',JSON.stringify(state.convStatuses));render()});
+ c.querySelectorAll('[data-cs]').forEach(btn=>btn.onclick=async()=>{state.convStatuses=state.convStatuses||{};const personKey=`${state.convBlock}|${x}|${decodeURIComponent(btn.dataset.person)}`;const previous=state.convStatuses[personKey]||'pending';state.convStatuses[personKey]=btn.dataset.cs;localStorage.setItem('jebsNexusConvStatuses',JSON.stringify(state.convStatuses));render();const ok=await saveConvStatusDirect(personKey,btn.dataset.cs);if(!ok){state.convStatuses[personKey]=previous;localStorage.setItem('jebsNexusConvStatuses',JSON.stringify(state.convStatuses));render();alert('Não foi possível salvar o status da convocação no servidor.');}});
  return;
 }
    c.innerHTML=`<div class="pageTop"><button class="backBtn" id="backHome">‹ Início</button><div><div class="eyebrow">JEBs 2026</div><h2>Convocações</h2></div></div><div class="pageNote">Modalidades organizadas pelos dois blocos. Toque em uma modalidade para visualizar a convocação.</div><section class="convBlock"><div class="blockTitle">BLOCO 1</div><div class="convGrid">${renderGroup(b1,'c1')}</div></section><section class="convBlock"><div class="blockTitle">BLOCO 2</div><div class="convGrid">${renderGroup(b2,'c2')}</div></section>`;
@@ -666,22 +679,28 @@ function card(t){const s=status(t),h=hist(t),p=t.passengers||t.stops?.reduce((a,
 function enterCategory(cat){state.category=cat;state.view="dates";state.date=null;state.filter="all";render()}
 function enterDate(d){state.date=decodeURIComponent(d);state.view="transports";state.filter="all";render()}
 function goCategories(){state.view="categories";render()}function goDates(){state.view="dates";render()}
-function toggleStop(i){
+async function toggleStop(i){
  const t=state.current;if(!t)return;
+ const id=t.id,before=JSON.stringify(hist(t));
  const h=hist(t);h.stops=h.stops||[];
  const p=h.stops.indexOf(i);
  if(p>=0)h.stops.splice(p,1);else h.stops.push(i);
  if(h.stops.length)h.steps[0]=true;
- persist();render();openTransport(t.id);
+ render();openTransport(id);
+ const ok=await persistHistoryAction(id,h);
+ if(!ok){state.history[id]=JSON.parse(before);render();openTransport(id);}
 }
-function toggleStep(i){
+async function toggleStep(i){
  const t=state.current;if(!t)return;
+ const id=t.id,before=JSON.stringify(hist(t));
  const h=hist(t);h.steps=h.steps||[false,false,false];
  h.steps[i]=!h.steps[i];
- if(i===0 && !h.steps[0]) h.steps[1]=false;
- if(i===1 && !h.steps[1]) h.steps[2]=false;
+ if(i===0 && !h.steps[0])h.steps[1]=false;
+ if(i===1 && !h.steps[1])h.steps[2]=false;
  h.done=h.steps[0]&&h.steps[1]&&h.steps[2];
- persist();render();openTransport(t.id);
+ render();openTransport(id);
+ const ok=await persistHistoryAction(id,h);
+ if(!ok){state.history[id]=JSON.parse(before);render();openTransport(id);}
 }
 async function completeTransport(){
  const t=state.current;if(!t)return;
@@ -909,6 +928,7 @@ async function importWorkbook(file){
    if(!imported.length)throw new Error("Não encontrei nenhum bloco 'TRANSPORTE' nessa planilha.");
    imported=imported.map(t=>({...t,stops:Array.isArray(t.stops)?t.stops.map(x=>x?.kind==="chegada"?({...x,time:formatExcelTime(x.time)}):x):t.stops}));
    const old=state.transports.slice();
+   const previousHistory=JSON.parse(JSON.stringify(state.history||{}));
    const oldByKey=new Map(old.map(t=>[stableKey(t),t]));
    const oldByIdentity=new Map(old.map(t=>[`${t.category||"embarque"}|${t.number??""}|${t.date||""}`,t]));
    const next=[];
@@ -926,13 +946,21 @@ async function importWorkbook(file){
    state.transports=next;
    migrateHistory();
    localRevision++;
+   const importTransportsSnapshot=old;
+   const importHistorySnapshot=previousHistory;
    localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
    state.view="categories";state.date=null;state.filter="all";render();
    clearTimeout(syncTimer);
    const ready=await waitForServerIdle();
    if(!ready)throw new Error("Servidor ainda está processando uma gravação anterior. Tente novamente em alguns segundos.");
    const ok=await serverSync({replaceTransports:true});
-   if(!ok)throw new Error("Não foi possível gravar a planilha no servidor.");
+   if(!ok){
+     state.transports=importTransportsSnapshot;
+     state.history=importHistorySnapshot;
+     localStorage.setItem("jebsNexusHistory",JSON.stringify(state.history));
+     render();
+     throw new Error("Não foi possível gravar a planilha no servidor. A importação foi cancelada e os dados anteriores foram mantidos.");
+   }
    alert(`Planilha importada com sucesso: ${state.transports.length} transporte(s). O histórico de check-ins foi preservado.`);
  }catch(err){console.error(err);alert("Erro ao importar a planilha: "+(err?.message||err));}
 }
