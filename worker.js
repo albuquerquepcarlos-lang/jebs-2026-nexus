@@ -43,8 +43,21 @@ async function readState(env) {
   return { transports, history, convStatuses, initialized: transports.length > 0 };
 }
 
+function normalizeTransportPassengers(transports = []) {
+  return transports.map(t => {
+    if (!t || typeof t !== 'object') return t;
+    const stops = Array.isArray(t.stops) ? t.stops : [];
+    const boarding = stops.filter(x => x && x.kind !== 'chegada');
+    const passengers = boarding.reduce((sum, x) => {
+      const q = Number(x?.qty);
+      return sum + (Number.isFinite(q) ? q : 0);
+    }, 0);
+    return { ...t, passengers };
+  });
+}
+
 async function writeState(env, payload) {
-  const transports = Array.isArray(payload?.transports) ? payload.transports : [];
+  const transports = normalizeTransportPassengers(Array.isArray(payload?.transports) ? payload.transports : []);
   const incomingHistory = payload?.history || {};
   const convStatuses = payload?.convStatuses || {};
   const replaceTransports = payload?.replaceTransports === true;
@@ -65,9 +78,6 @@ async function writeState(env, payload) {
     }
   }
   const history = mergeHistory(existingHistory, incomingHistory);
-  // Explicit user actions (concluir/reabrir) are authoritative.
-  // A normal spreadsheet sync preserves existing check-ins, but a forced
-  // history update must be allowed to change true -> false as well.
   for (const id of forceHistoryIds) {
     if (Object.prototype.hasOwnProperty.call(incomingHistory, id)) {
       history[id] = incomingHistory[id];
@@ -76,8 +86,6 @@ async function writeState(env, payload) {
 
   const batch = [];
   if (replaceTransports) {
-    // Full spreadsheet import: the imported list is authoritative.
-    // History is intentionally NOT deleted.
     await env.DB.prepare('DELETE FROM transports').run();
   }
 
@@ -122,7 +130,9 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname === '/api/state' && request.method === 'GET') {
-        return json(await readState(env));
+        const state = await readState(env);
+        state.transports = normalizeTransportPassengers(state.transports);
+        return json(state);
       }
       if (url.pathname === '/api/conv-status' && request.method === 'POST') {
         const payload = await request.json();
@@ -157,7 +167,46 @@ export default {
         await env.DB.prepare('SELECT 1').first();
         return json({ ok: true, service: 'jebs-2026-nexus', database: 'connected' });
       }
-      return env.ASSETS.fetch(request);
+      const assetResponse = await env.ASSETS.fetch(request);
+      const contentType = assetResponse.headers.get('content-type') || '';
+      if (!contentType.includes('text/html')) return assetResponse;
+      const html = await assetResponse.text();
+      const patch = `<script>
+(function(){
+  const originalFetch = window.fetch.bind(window);
+  function normalizeTransport(t){
+    if(!t || typeof t!=='object') return t;
+    const stops=Array.isArray(t.stops)?t.stops:[];
+    const passengers=stops.filter(x=>x&&x.kind!=='chegada').reduce((n,x)=>{const q=Number(x&&x.qty);return n+(Number.isFinite(q)?q:0)},0);
+    return Object.assign({},t,{passengers:passengers});
+  }
+  window.fetch = function(input, init){
+    try{
+      const url=typeof input==='string'?input:(input&&input.url)||'';
+      if(String(url).includes('/api/state')){
+        if(init && init.body && typeof init.body==='string' && String(init.method||'GET').toUpperCase()==='POST'){
+          const payload=JSON.parse(init.body);
+          if(Array.isArray(payload.transports)) payload.transports=payload.transports.map(normalizeTransport);
+          init=Object.assign({},init,{body:JSON.stringify(payload)});
+        }
+        return originalFetch(input,init).then(function(res){
+          if(!res.ok) return res;
+          return res.clone().json().then(function(data){
+            if(Array.isArray(data.transports)) data.transports=data.transports.map(normalizeTransport);
+            return new Response(JSON.stringify(data),{status:res.status,statusText:res.statusText,headers:res.headers});
+          }).catch(function(){return res});
+        });
+      }
+    }catch(e){}
+    return originalFetch(input,init);
+  };
+})();
+</script>`;
+      return new Response(html.replace('</head>', patch + '</head>'), {
+        status: assetResponse.status,
+        statusText: assetResponse.statusText,
+        headers: assetResponse.headers
+      });
     } catch (error) {
       console.error(error);
       return json({ ok: false, error: error?.message || String(error) }, 500);
